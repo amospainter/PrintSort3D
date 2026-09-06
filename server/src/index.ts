@@ -11,7 +11,7 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const scanOnStartup = /^(1|true|yes)$/i.test(process.env.SCAN_ON_STARTUP ?? '');
 
 createApp().listen(PORT, () => {
-  console.log(`3d-tracker server listening on http://localhost:${PORT}`);
+  console.log(`printsort3d server listening on http://localhost:${PORT}`);
   if (scanOnStartup) {
     console.log('Startup scan: running...');
     runScan()
