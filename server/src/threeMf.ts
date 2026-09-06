@@ -6,10 +6,16 @@ export interface PlateSize {
   y: number; // mm
 }
 
+export interface FilamentInfo {
+  color: string; // normalized "#RRGGBB" (or "#RRGGBBAA")
+  type: string | null; // parallel filament_type entry, if present
+}
+
 export interface ThreeMfExtract {
   thumbnailBuffer: Buffer | null;
   filamentType: string | null;
   filamentColor: string | null;
+  filaments: FilamentInfo[]; // every configured filament slot (multi-color / AMS prints), color + type
   layerHeight: string | null;
   rawMetadata: Record<string, unknown> | null;
   plateSize: PlateSize | null; // build-plate footprint from Bambu/Orca slicer settings, if declared
@@ -60,6 +66,36 @@ function firstValue(v: unknown): string | null {
   if (Array.isArray(v)) return v.length > 0 ? String(v[0]) : null;
   if (v === undefined || v === null) return null;
   return String(v);
+}
+
+// A settings value as a list, whether it's stored as an array (multi-extruder) or a
+// lone scalar (single-extruder profile). Used to line up filament_colour with the
+// parallel filament_type array.
+function arrayValues(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => String(x));
+  if (v === undefined || v === null) return [];
+  return [String(v)];
+}
+
+const HEX_COLOR_RE = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
+
+/**
+ * Every filament slot declared in a Bambu/Orca project_settings.config, as color+type pairs.
+ * `filament_colour` (or the American `filament_color`) is one entry per AMS/extruder slot in
+ * the printer profile — a 4-color print keeps 4 entries here even though the older single
+ * `filamentColor` field only ever saw the first. `filament_type` runs parallel. Entries whose
+ * color isn't a "#RRGGBB(AA)" hex string are dropped (nothing meaningful to render as a swatch).
+ */
+function parseFilaments(json: Record<string, unknown>): FilamentInfo[] {
+  const colors = arrayValues(json.filament_colour ?? json.filament_color);
+  const types = arrayValues(json.filament_type);
+  const filaments: FilamentInfo[] = [];
+  for (let i = 0; i < colors.length; i++) {
+    const color = colors[i].trim().toUpperCase();
+    if (!HEX_COLOR_RE.test(color)) continue;
+    filaments.push({ color, type: types[i] ?? null });
+  }
+  return filaments;
 }
 
 export interface ThreeMfImageEntry {
@@ -270,6 +306,7 @@ export function extractThreeMfData(filePath: string): ThreeMfExtract {
     thumbnailBuffer: null,
     filamentType: null,
     filamentColor: null,
+    filaments: [],
     layerHeight: null,
     rawMetadata: null,
     plateSize: null,
@@ -300,6 +337,7 @@ export function extractThreeMfData(filePath: string): ThreeMfExtract {
       result.rawMetadata = json;
       result.filamentType = firstValue(json.filament_type);
       result.filamentColor = firstValue(json.filament_colour ?? json.filament_color);
+      result.filaments = parseFilaments(json);
       result.layerHeight = firstValue(json.layer_height);
       result.plateSize = parsePlateSize(json);
     } catch {

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS files (
   missing INTEGER NOT NULL DEFAULT 0,
   filament_type TEXT,
   filament_color TEXT,
+  filaments_json TEXT,
   layer_height TEXT,
   slicer_metadata_json TEXT,
   embedded_images_json TEXT,
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS files (
   archive_entry_count INTEGER,
   plates_json TEXT,
   plate_size_json TEXT,
+  mesh_path TEXT,
   UNIQUE(root_id, relative_path)
 );
 
@@ -72,6 +74,8 @@ const migrations: [string, string][] = [
   ['archive_entry_count', 'ALTER TABLE files ADD COLUMN archive_entry_count INTEGER'],
   ['plates_json', 'ALTER TABLE files ADD COLUMN plates_json TEXT'],
   ['plate_size_json', 'ALTER TABLE files ADD COLUMN plate_size_json TEXT'],
+  ['filaments_json', 'ALTER TABLE files ADD COLUMN filaments_json TEXT'],
+  ['mesh_path', 'ALTER TABLE files ADD COLUMN mesh_path TEXT'],
 ];
 
 for (const [column, sql] of migrations) {

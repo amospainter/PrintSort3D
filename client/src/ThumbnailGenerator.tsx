@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import * as THREE from 'three';
-import { loadModelAsObject3D, frameObject } from './loadModel';
+import { loadModelAsObject3D, loadBakedMesh, frameObject } from './loadModel';
 import { api } from './api';
 
 interface Props {
@@ -16,12 +16,16 @@ export function ThumbnailGenerator({ fileId, ext, onDone }: Props) {
 
     (async () => {
       try {
-        const res = await fetch(api.rawFileUrl(fileId));
-        if (!res.ok) throw new Error(`raw fetch failed: ${res.status}`);
-        const arrayBuffer = await res.arrayBuffer();
-        if (cancelled) return;
-
-        const object = await loadModelAsObject3D(ext, arrayBuffer);
+        // Prefer the server-baked mesh (no unzip / DOM parse); fall back to the raw file.
+        let object: THREE.Object3D;
+        const meshRes = await fetch(`/api/files/${fileId}/mesh`);
+        if (meshRes.ok) {
+          object = loadBakedMesh(await meshRes.arrayBuffer());
+        } else {
+          const res = await fetch(api.rawFileUrl(fileId));
+          if (!res.ok) throw new Error(`raw fetch failed: ${res.status}`);
+          object = await loadModelAsObject3D(ext, await res.arrayBuffer());
+        }
         if (cancelled) return;
 
         const size = 256;

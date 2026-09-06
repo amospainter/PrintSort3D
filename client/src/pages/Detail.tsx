@@ -102,6 +102,7 @@ export default function Detail() {
   const [activePlateIndex, setActivePlateIndex] = useState<number | null>(null);
   const [rescanning, setRescanning] = useState(false);
   const [rescanMessage, setRescanMessage] = useState<string | null>(null);
+  const [painted, setPainted] = useState(false);
 
   useEffect(() => {
     api.getFile(fileId).then((f) => {
@@ -128,10 +129,11 @@ export default function Detail() {
       .finally(() => setRescanning(false));
   };
 
-  // Archive files are browsed entry-by-entry (ArchiveViewer fetches its own bytes),
-  // so the whole-file raw fetch below only applies to regular model files.
+  // Archive files are browsed entry-by-entry (ArchiveViewer fetches its own bytes). Baked
+  // files load their mesh inside ModelViewer. The whole-file raw fetch here is only the
+  // fallback for a non-archive file with no baked mesh yet (pre-v8 scan, or bake failed).
   useEffect(() => {
-    if (!file || file.ext === '.zip') return;
+    if (!file || file.ext === '.zip' || file.meshUrl) return;
     fetch(api.rawFileUrl(fileId))
       .then((res) => (res.ok ? res.arrayBuffer() : null))
       .then(setArrayBuffer);
@@ -188,16 +190,27 @@ export default function Detail() {
             <div className="viewer-pane">
               {file.ext === '.zip' ? (
                 <ArchiveViewer fileId={fileId} />
-              ) : arrayBuffer ? (
+              ) : file.meshUrl || arrayBuffer ? (
                 <>
                   <ModelViewer
                     ext={file.ext}
                     arrayBuffer={arrayBuffer}
+                    meshUrl={file.meshUrl}
                     visibleChildIndices={visibleChildIndices}
                     plates={file.plates}
                     bedSize={file.bedSize}
+                    filamentColors={file.filaments.map((f) => f.color)}
+                    painted={painted}
                   />
-                  <div className="viewer-hint">Drag to rotate &middot; Right-drag to pan &middot; Scroll to zoom</div>
+                  <div className="viewer-hint">
+                    <span>Drag to rotate &middot; Right-drag to pan &middot; Scroll to zoom</span>
+                    {file.meshUrl && file.filaments.length > 1 && (
+                      <label className="viewer-paint-toggle">
+                        <input type="checkbox" checked={painted} onChange={(e) => setPainted(e.target.checked)} />
+                        Show painted colors
+                      </label>
+                    )}
+                  </div>
                 </>
               ) : (
                 <p>Loading model...</p>
@@ -310,17 +323,39 @@ export default function Detail() {
             <button disabled={saving} onClick={saveNotes}>Save notes</button>
           </section>
 
-          {(file.filamentType || file.filamentColor || file.layerHeight) && (
+          {(file.filamentType || file.filamentColor || file.layerHeight || file.filaments.length > 0) && (
             <section>
               <h3>Slicer metadata (from 3MF)</h3>
-              <div className="details-row">
-                <span className="muted">Filament type</span>
-                <span>{file.filamentType ?? '—'}</span>
-              </div>
-              <div className="details-row">
-                <span className="muted">Filament color</span>
-                <span>{file.filamentColor ?? '—'}</span>
-              </div>
+              {file.filaments.length > 0 ? (
+                <div className="details-row">
+                  <span className="muted">
+                    {file.filaments.length > 1 ? `Filaments (${file.filaments.length})` : 'Filament'}
+                  </span>
+                  <span className="filament-swatches">
+                    {file.filaments.map((f, i) => (
+                      <span
+                        key={`${f.color}-${i}`}
+                        className="filament-swatch"
+                        title={f.type ? `${f.color} · ${f.type}` : f.color}
+                      >
+                        <span className="filament-swatch-chip" style={{ backgroundColor: f.color }} />
+                        <span className="filament-swatch-label">{f.color}</span>
+                      </span>
+                    ))}
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <div className="details-row">
+                    <span className="muted">Filament type</span>
+                    <span>{file.filamentType ?? '—'}</span>
+                  </div>
+                  <div className="details-row">
+                    <span className="muted">Filament color</span>
+                    <span>{file.filamentColor ?? '—'}</span>
+                  </div>
+                </>
+              )}
               <div className="details-row">
                 <span className="muted">Layer height</span>
                 <span>{file.layerHeight ?? '—'}</span>

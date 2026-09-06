@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import zlib from 'zlib';
 import AdmZip from 'adm-zip';
 
 let tmpRoot: string;
@@ -69,7 +70,13 @@ function writeBambu3mf(name: string, imageBuffer: Buffer = Buffer.from('fake-png
   zip.addFile('Metadata/plate_1.png', imageBuffer);
   zip.addFile(
     'Metadata/project_settings.config',
-    Buffer.from(JSON.stringify({ filament_type: ['ABS'], layer_height: ['0.28'] }))
+    Buffer.from(
+      JSON.stringify({
+        filament_type: ['ABS', 'PLA'],
+        filament_colour: ['#ff0000', '#00FF00'],
+        layer_height: ['0.28'],
+      })
+    )
   );
   zip.addFile(
     '3D/3dmodel.model',
@@ -77,7 +84,12 @@ function writeBambu3mf(name: string, imageBuffer: Buffer = Buffer.from('fake-png
       '<model><resources><object id="1"><mesh><vertices>' +
         '<vertex x="0" y="0" z="0" /><vertex x="25" y="0" z="0" />' +
         '<vertex x="0" y="12" z="0" /><vertex x="0" y="0" z="8" />' +
-        '</vertices></mesh></object></resources></model>'
+        '</vertices><triangles>' +
+        '<triangle v1="0" v2="1" v3="2" paint_color="8"/>' +
+        '<triangle v1="0" v2="1" v3="3" paint_color="4"/>' +
+        '<triangle v1="1" v2="2" v3="3"/>' +
+        '</triangles></mesh></object></resources>' +
+        '<build><item objectid="1"/></build></model>'
     )
   );
   zip.writeZip(path.join(filesDir, name));
@@ -122,6 +134,75 @@ describe('runScan', () => {
 
     const thumbPath = path.join(process.env.THUMBNAILS_DIR!, row.thumbnail_path);
     expect(fs.existsSync(thumbPath)).toBe(true);
+  });
+
+  it('stores the full multi-color filament list (normalized) as filaments_json', async () => {
+    writeBambu3mf('multicolor.3mf');
+
+    await runScan();
+
+    const row = db.prepare('SELECT * FROM files WHERE filename = ?').get('multicolor.3mf') as any;
+    expect(JSON.parse(row.filaments_json)).toEqual([
+      { color: '#FF0000', type: 'ABS' },
+      { color: '#00FF00', type: 'PLA' },
+    ]);
+  });
+
+  it('bakes a gzipped render mesh (mesh.bin.gz) with folded-in paint for a painted 3mf', async () => {
+    writeBambu3mf('painted.3mf');
+
+    await runScan();
+
+    const row = db.prepare('SELECT * FROM files WHERE filename = ?').get('painted.3mf') as any;
+    expect(row.mesh_path).toBe('mesh.bin.gz');
+
+    const gz = fs.readFileSync(path.join(process.env.ASSETS_DIR!, String(row.id), 'mesh.bin.gz'));
+    const blob = zlib.gunzipSync(gz);
+    expect(blob.toString('ascii', 0, 4)).toBe('PSM1');
+    expect(blob.readUInt32LE(4)).toBe(1); // one part
+    expect(blob.readUInt32LE(8)).toBe(12); // floatCount = 4 verts × 3
+    expect(blob.readUInt32LE(12)).toBe(9); // indexCount = 3 triangles × 3
+    expect(blob.readUInt32LE(16) & 1).toBe(1); // flags: hasPaint
+  });
+
+  it('backfills mesh_path + bumps scanner_version to >= 8 on a rescan of a stale row', async () => {
+    writeBambu3mf('stale-mesh.3mf');
+    await runScan();
+    db.prepare("UPDATE files SET mesh_path = NULL, scanner_version = 0 WHERE filename = 'stale-mesh.3mf'").run();
+
+    await runScan();
+
+    const after = db.prepare("SELECT * FROM files WHERE filename = 'stale-mesh.3mf'").get() as any;
+    expect(after.mesh_path).toBe('mesh.bin.gz');
+    expect(after.scanner_version).toBeGreaterThanOrEqual(8);
+  });
+
+  it('bakes a render mesh for a plain STL too', async () => {
+    writeBinaryStlWithKnownSize('baked-cube.stl', [10, 20, 30]);
+    await runScan();
+    const row = db.prepare("SELECT * FROM files WHERE filename = 'baked-cube.stl'").get() as any;
+    expect(row.mesh_path).toBe('mesh.bin.gz');
+    const blob = zlib.gunzipSync(
+      fs.readFileSync(path.join(process.env.ASSETS_DIR!, String(row.id), 'mesh.bin.gz'))
+    );
+    expect(blob.toString('ascii', 0, 4)).toBe('PSM1');
+    expect(blob.readUInt32LE(12)).toBe(0); // non-indexed triangle soup
+  });
+
+  it('backfills filaments_json on a rescan of a row stuck at an older scanner_version', async () => {
+    writeBambu3mf('legacy-filaments.3mf');
+    await runScan();
+    db.prepare(
+      "UPDATE files SET filaments_json = NULL, scanner_version = 0 WHERE filename = 'legacy-filaments.3mf'"
+    ).run();
+
+    await runScan();
+
+    const after = db
+      .prepare("SELECT * FROM files WHERE filename = 'legacy-filaments.3mf'")
+      .get() as any;
+    expect(JSON.parse(after.filaments_json)).toHaveLength(2);
+    expect(after.scanner_version).toBeGreaterThanOrEqual(6);
   });
 
   it('caches embedded 3mf images as WebP files under the assets directory', async () => {

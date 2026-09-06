@@ -5,7 +5,7 @@ import { db } from './db';
 import { loadConfig, saveConfig, RootConfig, PlateSize } from './config';
 import { runScan, rescanFile } from './scanner';
 import { THUMBNAILS_DIR, ASSETS_DIR } from './paths';
-import { deleteCachedImages } from './assets';
+import { deleteCachedImages, BAKED_MESH_FILENAME } from './assets';
 import { listArchiveModelEntries, readArchiveEntry } from './archive';
 
 export const router = Router();
@@ -24,6 +24,7 @@ interface FileRow {
   missing: number;
   filament_type: string | null;
   filament_color: string | null;
+  filaments_json: string | null;
   layer_height: string | null;
   slicer_metadata_json: string | null;
   embedded_images_json: string | null;
@@ -35,6 +36,7 @@ interface FileRow {
   archive_entry_count: number | null;
   plates_json: string | null;
   plate_size_json: string | null;
+  mesh_path: string | null;
   root_label?: string;
   root_path?: string;
   tags?: string;
@@ -91,6 +93,9 @@ function serializeFile(row: FileRow, defaultPlateSize: PlateSize) {
     relativePath: row.relative_path,
     filamentType: row.filament_type,
     filamentColor: row.filament_color,
+    filaments: row.filaments_json
+      ? (JSON.parse(row.filaments_json) as { color: string; type: string | null }[])
+      : [],
     layerHeight: row.layer_height,
     slicerMetadata: row.slicer_metadata_json ? JSON.parse(row.slicer_metadata_json) : null,
     embeddedImages: row.embedded_images_json
@@ -124,6 +129,11 @@ function serializeFile(row: FileRow, defaultPlateSize: PlateSize) {
     // so the viewer always has a bed to draw. `plateSizeSource` lets the UI show which it is.
     bedSize: parsedPlateSize ?? { ...defaultPlateSize },
     plateSizeSource: parsedPlateSize ? ('file' as const) : ('default' as const),
+    // Pre-baked binary mesh (positions + indices, plus per-triangle filament slots for
+    // painted 3MFs) the viewer loads instead of parsing the source file in the browser.
+    // null when the bake found no geometry or the file predates scanner v8 — viewer then
+    // falls back to fetching the raw file.
+    meshUrl: row.mesh_path ? `/api/files/${row.id}/mesh` : null,
   };
 }
 
@@ -431,6 +441,19 @@ router.get('/thumbnails/:filename', (req, res) => {
   const filePath = path.join(THUMBNAILS_DIR, filename);
   if (!fs.existsSync(filePath)) return res.status(404).end();
   res.sendFile(filePath);
+});
+
+router.get('/files/:id/mesh', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).end();
+  const row = db.prepare('SELECT mesh_path FROM files WHERE id = ?').get(id) as
+    | { mesh_path: string | null }
+    | undefined;
+  if (!row?.mesh_path) return res.status(404).end();
+  const filePath = path.join(ASSETS_DIR, String(id), BAKED_MESH_FILENAME);
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  // Pre-gzipped on disk; the browser's fetch() inflates transparently.
+  res.set('Content-Encoding', 'gzip').type('application/octet-stream').sendFile(filePath);
 });
 
 router.get('/assets/:fileId/:filename', (req, res) => {

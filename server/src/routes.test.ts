@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import zlib from 'zlib';
 import request from 'supertest';
 import type { Express } from 'express';
 import AdmZip from 'adm-zip';
@@ -279,6 +280,73 @@ describe('embedded 3mf images / asset routes', () => {
 
     const imgRes = await request(app).get(file.embeddedImages[0]);
     expect(imgRes.status).toBe(200);
+  });
+
+  it('serves the baked mesh at /api/files/:id/mesh (gzip) and sets file.meshUrl', async () => {
+    const zip = new AdmZip();
+    zip.addFile('Metadata/plate_1.png', onePixelPng);
+    zip.addFile(
+      '3D/3dmodel.model',
+      Buffer.from(
+        '<model><resources><object id="1"><mesh><vertices>' +
+          '<vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/>' +
+          '</vertices><triangles>' +
+          '<triangle v1="0" v2="1" v3="2" paint_color="8"/>' +
+          '</triangles></mesh></object></resources><build><item objectid="1"/></build></model>'
+      )
+    );
+    zip.writeZip(path.join(filesDir, 'baked.3mf'));
+    await runScan();
+
+    const listRes = await request(app).get('/api/files?query=baked');
+    const file = listRes.body.items[0];
+    expect(file.meshUrl).toBe(`/api/files/${file.id}/mesh`);
+
+    const meshRes = await request(app)
+      .get(file.meshUrl)
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+    expect(meshRes.status).toBe(200);
+    expect(meshRes.headers['content-encoding']).toBe('gzip');
+    // superagent may or may not have already inflated the body; handle both.
+    let blob = meshRes.body as Buffer;
+    if (blob[0] === 0x1f && blob[1] === 0x8b) blob = zlib.gunzipSync(blob);
+    expect(blob.toString('ascii', 0, 4)).toBe('PSM1');
+    expect(blob.readUInt32LE(4)).toBe(1); // one part
+    expect(blob.readUInt32LE(12)).toBe(3); // indexCount = 1 triangle
+  });
+
+  it('404s /api/files/:id/mesh for a file with no baked mesh', async () => {
+    fs.writeFileSync(path.join(filesDir, 'nogeo.stl'), 'solid x\nendsolid x\n');
+    await runScan();
+    const listRes = await request(app).get('/api/files?query=nogeo');
+    const file = listRes.body.items[0];
+    expect(file.meshUrl).toBeNull();
+    const res = await request(app).get(`/api/files/${file.id}/mesh`);
+    expect(res.status).toBe(404);
+  });
+
+  it('serializes the multi-color filament list as file.filaments', async () => {
+    const zip = new AdmZip();
+    zip.addFile('Metadata/plate_1.png', onePixelPng);
+    zip.addFile(
+      'Metadata/project_settings.config',
+      Buffer.from(
+        JSON.stringify({ filament_type: ['PLA', 'PETG'], filament_colour: ['#AABBCC', '#112233'] })
+      )
+    );
+    zip.writeZip(path.join(filesDir, 'filaments.3mf'));
+    await runScan();
+
+    const res = await request(app).get('/api/files?query=filaments');
+    expect(res.body.items[0].filaments).toEqual([
+      { color: '#AABBCC', type: 'PLA' },
+      { color: '#112233', type: 'PETG' },
+    ]);
   });
 
   it('rejects non-webp / path-traversal-looking asset filenames', async () => {

@@ -53,6 +53,8 @@ export interface FileEntry {
   relativePath: string;
   filamentType: string | null;
   filamentColor: string | null;
+  filaments: { color: string; type: string | null }[]; // every configured filament slot (multi-color / AMS prints)
+  meshUrl: string | null; // /api/files/:id/mesh — server-baked render mesh (positions/indices + folded-in paint), else null
   layerHeight: string | null;
   slicerMetadata: Record<string, unknown> | null;
   embeddedImages: string[]; // absolute URLs, e.g. "/api/assets/12/plate_1.webp"

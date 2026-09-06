@@ -59,7 +59,13 @@ function withCorruptedEntry<T>(entryName: string, run: () => T): T {
 
 // Vitest hoists vi.mock() calls above all imports in the file, so a normal static
 // import here still resolves to the mocked adm-zip.
-import { extractThreeMfData, listThreeMfImages, groupImagesByPlate, parsePlateSize, computePlateNames } from './threeMf';
+import {
+  extractThreeMfData,
+  listThreeMfImages,
+  groupImagesByPlate,
+  parsePlateSize,
+  computePlateNames,
+} from './threeMf';
 
 const tmpFiles: string[] = [];
 
@@ -100,6 +106,47 @@ describe('extractThreeMfData', () => {
     expect(result.filamentColor).toBe('#FF0000');
     expect(result.layerHeight).toBe('0.2');
     expect(result.rawMetadata).toEqual(settings);
+  });
+
+  it('extracts every filament slot (multi-color / AMS) as normalized color+type pairs', () => {
+    const file = writeFixtureZip([
+      {
+        name: 'Metadata/project_settings.config',
+        content: JSON.stringify({
+          filament_type: ['PLA', 'PLA', 'PETG', 'PLA'],
+          filament_colour: ['#76d9f4', '#2850E0', '#161616', '#ffffff'],
+        }),
+      },
+    ]);
+
+    expect(extractThreeMfData(file).filaments).toEqual([
+      { color: '#76D9F4', type: 'PLA' },
+      { color: '#2850E0', type: 'PLA' },
+      { color: '#161616', type: 'PETG' },
+      { color: '#FFFFFF', type: 'PLA' },
+    ]);
+  });
+
+  it('drops filament entries whose colour is not a hex string, and tolerates a missing type', () => {
+    const file = writeFixtureZip([
+      {
+        name: 'Metadata/project_settings.config',
+        content: JSON.stringify({
+          filament_type: ['PLA'],
+          filament_colour: ['#123456', '', 'Default'],
+        }),
+      },
+    ]);
+
+    expect(extractThreeMfData(file).filaments).toEqual([{ color: '#123456', type: 'PLA' }]);
+  });
+
+  it('returns an empty filaments list when no filament_colour is present', () => {
+    const file = writeFixtureZip([
+      { name: 'Metadata/project_settings.config', content: JSON.stringify({ filament_type: ['PLA'] }) },
+    ]);
+
+    expect(extractThreeMfData(file).filaments).toEqual([]);
   });
 
   it('falls back through thumbnail candidates in priority order', () => {

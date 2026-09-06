@@ -859,6 +859,23 @@ button.tag-chip {
   background: rgba(0, 0, 0, 0.4);
   padding: 3px 10px;
   border-radius: 999px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.viewer-paint-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+}
+
+.viewer-paint-toggle input {
+  margin: 0;
+  cursor: pointer;
 }
 
 /* Vertical plate switcher — a proper panel beside the viewport rather than an overlay on
@@ -1193,4 +1210,31 @@ button.tag-chip {
 .tag-color-reset {
   font-size: 11px;
   padding: 2px 6px;
+}
+
+.filament-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  justify-content: flex-end;
+}
+
+.filament-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.filament-swatch-chip {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.filament-swatch-label {
+  font-size: 12px;
+  color: var(--text-muted);
 }

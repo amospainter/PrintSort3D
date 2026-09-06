@@ -20,7 +20,9 @@ Returned by every endpoint below that mentions "a file object":
   root: { label: string, path: string },
   relativePath: string,           // path relative to root.path
   filamentType: string | null,    // from 3MF project_settings.config, if present
-  filamentColor: string | null,
+  filamentColor: string | null,   // first slot only; see `filaments` for the full multi-color list
+  filaments: { color: string, type: string | null }[],  // every filament slot from project_settings.config (multi-color / AMS), color normalized to "#RRGGBB"; [] if none
+  meshUrl: string | null,         // "/api/files/:id/mesh" server-baked render mesh (STL/OBJ/3MF), else null
   layerHeight: string | null,
   slicerMetadata: object | null,  // full raw parsed 3MF slicer settings, if present
   embeddedImages: string[],       // "/api/assets/:id/:name.webp" URLs for every image embedded in a 3MF, else []
@@ -164,6 +166,19 @@ Streams the actual model file from disk (used by the client to fetch bytes for r
 ## `GET /api/assets/:fileId/:filename`
 
 Serves a cached WebP image extracted from a 3MF file's `Metadata/` folder (plate renders, top/pick shots, etc. — see `embeddedImages` on the file object). `:fileId` must be a bare integer and `:filename` must match `^[a-zA-Z0-9._-]+\.webp$`; either failing returns `400` before touching the filesystem. Returns `404` if the file doesn't exist on disk (e.g. the source 3MF had no embeddable images, or hasn't been rescanned since this feature was added).
+
+## `GET /api/files/:id/mesh`
+
+Serves the server-baked render mesh — parsed once at scan time so the viewer skips unzipping
+and DOM-parsing the source file in the browser. Gzipped on disk and sent with
+`Content-Encoding: gzip` (`fetch` inflates transparently); `Content-Type:
+application/octet-stream`. Blob layout (pre-gzip): `"PSM1"` magic (uint32LE), `partCount`
+(uint32LE — one part per 3MF `<build><item>`, STL/OBJ = 1), then per part `floatCount`
+(uint32LE), `indexCount` (uint32LE, `0` ⇒ non-indexed triangle soup), `flags` (uint32LE,
+bit0 = hasPaint), `Float32LE * floatCount` world-space positions, `Uint32LE * indexCount`,
+and — iff hasPaint — `Uint8 * triangleCount` 0-based filament slots (4-byte padded). `404`
+when the file has no baked mesh (`meshUrl` is null — unsupported, corrupt, or predates
+scanner v8).
 
 ## `GET /api/files/:id/archive`
 

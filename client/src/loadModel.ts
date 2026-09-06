@@ -28,6 +28,143 @@ export async function loadModelAsObject3D(ext: string, arrayBuffer: ArrayBuffer)
   throw new Error(`Unsupported model extension: ${ext}`);
 }
 
+// ─── Server-baked render mesh ────────────────────────────────────────────────────────────
+//
+// For catalogued files the server bakes the model to a compact "PSM1" binary blob at scan
+// time (positions + indices, plus per-triangle filament slots for painted 3MFs) — see
+// server/src/assets.ts `cacheBakedMesh`. Loading that skips unzipping + DOM-parsing a
+// multi-megabyte source file on the browser's main thread.
+
+const MESH_MAGIC = 0x314d5350; // "PSM1" little-endian
+// flatShading derives face normals in the shader — no per-vertex normal attribute to compute
+// (a real cost on a 400k-triangle mesh), and the faceted look suits 3D-print models. Matches
+// what three's ThreeMFLoader used for its default meshes.
+const BAKED_GRAY = new THREE.MeshStandardMaterial({
+  color: 0x9a9a9a,
+  roughness: 0.6,
+  metalness: 0.1,
+  flatShading: true,
+});
+
+interface BakedPart {
+  positions: Float32Array;
+  indices: Uint32Array; // empty ⇒ non-indexed
+  paint: Uint8Array | null;
+}
+
+export function parseBakedMesh(buf: ArrayBuffer): BakedPart[] {
+  if (buf.byteLength < 8) return [];
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== MESH_MAGIC) return [];
+  const partCount = dv.getUint32(4, true);
+  const parts: BakedPart[] = [];
+  let off = 8;
+  for (let i = 0; i < partCount; i++) {
+    if (off + 12 > buf.byteLength) break;
+    const floatCount = dv.getUint32(off, true);
+    const indexCount = dv.getUint32(off + 4, true);
+    const flags = dv.getUint32(off + 8, true);
+    off += 12;
+
+    const positions = new Float32Array(buf.slice(off, off + floatCount * 4));
+    off += floatCount * 4;
+    const indices = new Uint32Array(buf.slice(off, off + indexCount * 4));
+    off += indexCount * 4;
+
+    let paint: Uint8Array | null = null;
+    if (flags & 1) {
+      const triCount = indexCount > 0 ? indexCount / 3 : floatCount / 9;
+      paint = new Uint8Array(buf.slice(off, off + triCount));
+      off += (triCount + 3) & ~3; // 4-byte aligned
+    }
+    parts.push({ positions, indices, paint });
+  }
+  return parts;
+}
+
+/**
+ * Builds a THREE.Group (one Mesh per baked part, in part order) from a "PSM1" blob. The part
+ * order matches the 3MF `<build><item>` order, so `visibleChildIndices` plate toggling and
+ * `frameObject` / `frameVisibleChildren` work exactly as they did with ThreeMFLoader's output.
+ * Each mesh's per-triangle filament slots (painted 3MFs) are stashed on `mesh.userData.paint`
+ * for `applyPaintColors`.
+ */
+export function loadBakedMesh(buf: ArrayBuffer): THREE.Group {
+  const group = new THREE.Group();
+  for (const part of parseBakedMesh(buf)) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(part.positions, 3));
+    if (part.indices.length > 0) geom.setIndex(new THREE.BufferAttribute(part.indices, 1));
+    const mesh = new THREE.Mesh(geom, BAKED_GRAY);
+    mesh.userData.paint = part.paint;
+    group.add(mesh);
+  }
+  return group;
+}
+
+/**
+ * Paints each mesh of `object` in its real filament colours from the per-triangle slots the
+ * baker stashed on `mesh.userData.paint`. Geometry comes from our own baker so triangle
+ * counts are exact — no matching heuristics. Returns true if anything was painted.
+ */
+export function applyPaintColors(object: THREE.Object3D, filamentColors: string[]): boolean {
+  const palette = (filamentColors.length > 0 ? filamentColors : ['#9a9a9a']).map((c) =>
+    new THREE.Color().setStyle(c || '#9a9a9a')
+  );
+  const base = palette[0];
+  let painted = false;
+
+  object.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    const paint = mesh.userData?.paint as Uint8Array | null | undefined;
+    if (!mesh.isMesh || !paint || mesh.userData.unpainted) return;
+
+    const src = mesh.geometry as THREE.BufferGeometry;
+    const geom = src.index ? src.toNonIndexed() : src.clone();
+    const triCount = paint.length;
+    const colors = new Uint8Array(triCount * 9);
+    for (let t = 0; t < triCount; t++) {
+      const c = palette[paint[t]] ?? base;
+      const r = Math.round(c.r * 255);
+      const g = Math.round(c.g * 255);
+      const b = Math.round(c.b * 255);
+      for (let k = 0; k < 3; k++) {
+        const idx = t * 9 + k * 3;
+        colors[idx] = r;
+        colors[idx + 1] = g;
+        colors[idx + 2] = b;
+      }
+    }
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3, true));
+
+    mesh.userData.unpainted = { geometry: mesh.geometry, material: mesh.material };
+    mesh.geometry = geom;
+    mesh.material = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.7,
+      metalness: 0,
+      flatShading: true,
+    });
+    painted = true;
+  });
+  return painted;
+}
+
+/** Restores the original geometry/material stashed by applyPaintColors. */
+export function removePaintColors(object: THREE.Object3D): void {
+  object.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    const saved = mesh.userData?.unpainted as { geometry: THREE.BufferGeometry; material: THREE.Material } | undefined;
+    if (!mesh.isMesh || !saved) return;
+    (mesh.geometry as THREE.BufferGeometry).dispose();
+    const mat = mesh.material;
+    (Array.isArray(mat) ? mat : [mat]).forEach((m) => (m as THREE.Material).dispose());
+    mesh.geometry = saved.geometry;
+    mesh.material = saved.material;
+    delete mesh.userData.unpainted;
+  });
+}
+
 // Optional in-plane extent (mm) the framing must also keep visible — the print bed, which
 // can be larger than the model itself. Only X/Y matter; the bed has no height.
 export interface FloorExtent {

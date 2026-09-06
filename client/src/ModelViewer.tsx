@@ -2,7 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { Grid, OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
-import { loadModelAsObject3D, frameObject, frameVisibleChildren, bedZ } from './loadModel';
+import {
+  loadModelAsObject3D,
+  loadBakedMesh,
+  frameObject,
+  frameVisibleChildren,
+  bedZ,
+  applyPaintColors,
+  removePaintColors,
+} from './loadModel';
 
 interface Footprint {
   x: number;
@@ -31,33 +39,58 @@ interface PlateRef {
 function Model({
   ext,
   arrayBuffer,
+  meshUrl,
   onFramed,
   onBeds,
   visibleChildIndices,
   plates,
   bedSize,
+  filamentColors,
+  painted,
 }: {
   ext: string;
-  arrayBuffer: ArrayBuffer;
+  arrayBuffer?: ArrayBuffer | null;
+  meshUrl?: string | null;
   onFramed?: () => void;
   onBeds?: (beds: PlateBed[]) => void;
   visibleChildIndices?: number[] | null;
   plates?: PlateRef[];
   bedSize?: { x: number; y: number } | null;
+  filamentColors?: string[];
+  painted?: boolean;
 }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const { camera } = useThree();
 
+  // Prefer the server-baked mesh (fast: no unzip / DOM parse); fall back to parsing the raw
+  // file bytes in-browser for archive entries and files not yet baked.
   useEffect(() => {
     let cancelled = false;
-    loadModelAsObject3D(ext, arrayBuffer).then((obj) => {
-      if (cancelled) return;
-      setObject(obj);
-    });
+    const load = meshUrl
+      ? fetch(meshUrl)
+          .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(`mesh ${res.status}`))))
+          .then((buf) => loadBakedMesh(buf) as THREE.Object3D)
+      : arrayBuffer
+        ? loadModelAsObject3D(ext, arrayBuffer)
+        : null;
+    if (!load) return;
+    load.then((obj) => !cancelled && setObject(obj)).catch(() => !cancelled && setObject(null));
     return () => {
       cancelled = true;
     };
-  }, [ext, arrayBuffer]);
+  }, [ext, arrayBuffer, meshUrl]);
+
+  // Toggle painted vertex colours on the loaded meshes in place. Independent of the framing
+  // effect below — geometry swaps don't change the bounding box, and plate visibility toggling
+  // operates on Group children, not geometry.
+  useEffect(() => {
+    if (!object) return;
+    if (painted) {
+      applyPaintColors(object, filamentColors ?? []);
+    } else {
+      removePaintColors(object);
+    }
+  }, [object, painted, filamentColors]);
 
   // Applies plate visibility (multi-plate 3MFs) and reframes the camera around whatever's
   // now visible. Also runs once on initial load, when visibleChildIndices is undefined/null
@@ -231,7 +264,10 @@ function PrintBed({
 
 interface ModelViewerProps {
   ext: string;
-  arrayBuffer: ArrayBuffer;
+  // Raw file bytes — used for `.zip` archive entries and any file with no baked mesh yet.
+  arrayBuffer?: ArrayBuffer | null;
+  // Server-baked "PSM1" mesh URL (file.meshUrl); preferred over `arrayBuffer` when present.
+  meshUrl?: string | null;
   interactive?: boolean;
   onFramed?: () => void;
   // Which top-level build items (Group.children, in 3MF build order) to show — used to view
@@ -244,16 +280,24 @@ interface ModelViewerProps {
   // Build-plate footprint (mm) to draw the model against, to scale. From the API's
   // file.bedSize (declared 3MF size or the configured default). Omit for archive entries.
   bedSize?: { x: number; y: number } | null;
+  // Painted multi-material / AMS 3MFs: `filamentColors` is the palette (file.filaments
+  // colours), `painted` toggles the rendering. The per-triangle slots ride inside the baked
+  // mesh blob, so no extra fetch.
+  filamentColors?: string[];
+  painted?: boolean;
 }
 
 export function ModelViewer({
   ext,
   arrayBuffer,
+  meshUrl,
   interactive = true,
   onFramed,
   visibleChildIndices,
   plates,
   bedSize,
+  filamentColors,
+  painted,
 }: ModelViewerProps) {
   const [beds, setBeds] = useState<PlateBed[] | null>(null);
   const multi = (beds?.length ?? 0) > 1;
@@ -269,11 +313,14 @@ export function ModelViewer({
       <Model
         ext={ext}
         arrayBuffer={arrayBuffer}
+        meshUrl={meshUrl}
         onFramed={onFramed}
         onBeds={setBeds}
         visibleChildIndices={visibleChildIndices}
         plates={plates}
         bedSize={bedSize}
+        filamentColors={filamentColors}
+        painted={painted}
       />
       {beds?.map((bed) => (
         <PrintBed

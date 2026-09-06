@@ -4,7 +4,7 @@ import { db } from './db';
 import { loadConfig } from './config';
 import { extractThreeMfData, groupImagesByPlate, computePlateBuildIndices, computePlateNames } from './threeMf';
 import { THUMBNAILS_DIR } from './paths';
-import { cacheThreeMfImages } from './assets';
+import { cacheThreeMfImages, cacheBakedMesh } from './assets';
 import { computeDimensions } from './dimensions';
 import { computeContentHash, computeGeometryHash } from './fingerprint';
 import { listArchiveModelEntries } from './archive';
@@ -19,7 +19,7 @@ const SUPPORTED_EXTS = new Set(['.stl', '.3mf', '.obj', '.zip']);
 // disk. Legitimately-empty results (a file with no parseable geometry) still stop being
 // reprocessed once caught up, unlike inferring "needs backfill" from a nullable column, which
 // would retry forever for such files.
-const CURRENT_SCANNER_VERSION = 5;
+const CURRENT_SCANNER_VERSION = 8;
 
 function walk(dir: string, fileList: string[] = []): string[] {
   let entries: fs.Dirent[];
@@ -83,13 +83,14 @@ async function apply3mfMetadata(fileId: number, fullPath: string): Promise<void>
   }
 
   db.prepare(
-    `UPDATE files SET thumbnail_path = ?, filament_type = ?, filament_color = ?, layer_height = ?,
+    `UPDATE files SET thumbnail_path = ?, filament_type = ?, filament_color = ?, filaments_json = ?, layer_height = ?,
      slicer_metadata_json = ?, embedded_images_json = ?, plates_json = ?, plate_size_json = ?
      WHERE id = ?`
   ).run(
     thumbPath,
     extracted.filamentType,
     extracted.filamentColor,
+    extracted.filaments.length > 0 ? JSON.stringify(extracted.filaments) : null,
     extracted.layerHeight,
     extracted.rawMetadata ? JSON.stringify(extracted.rawMetadata) : null,
     embeddedImages.length > 0 ? JSON.stringify(embeddedImages) : null,
@@ -97,6 +98,14 @@ async function apply3mfMetadata(fileId: number, fullPath: string): Promise<void>
     extracted.plateSize ? JSON.stringify(extracted.plateSize) : null,
     fileId
   );
+}
+
+// Bakes STL/OBJ/3MF into a ready-to-render binary mesh cached under ASSETS_DIR so the viewer
+// skips unzipping + DOM-parsing the source file in the browser. `mesh_path` is the cached
+// filename, or NULL when the bake found no geometry (viewer falls back to the raw file).
+function applyBakedMesh(fileId: number, fullPath: string, ext: string): void {
+  const meshPath = cacheBakedMesh(fileId, fullPath, ext);
+  db.prepare('UPDATE files SET mesh_path = ? WHERE id = ?').run(meshPath, fileId);
 }
 
 function applyArchiveMetadata(fileId: number, fullPath: string): void {
@@ -116,6 +125,9 @@ async function applyFingerprint(fileId: number, fullPath: string, ext: string): 
 
 async function processFile(fileId: number, fullPath: string, ext: string): Promise<void> {
   applyDimensions(fileId, fullPath, ext);
+  if (ext === '.stl' || ext === '.obj' || ext === '.3mf') {
+    applyBakedMesh(fileId, fullPath, ext);
+  }
   if (ext === '.3mf') {
     await apply3mfMetadata(fileId, fullPath);
   }
