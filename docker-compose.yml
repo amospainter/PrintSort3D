@@ -1,7 +1,10 @@
 services:
   printsort3d:
-    build: .
-    image: printsort3d
+    # Pulls the published image. Update with: docker compose pull && docker compose up -d
+    image: ghcr.io/amospainter/printsort3d:latest
+    # To build from this checkout instead of pulling, comment out the line above,
+    # uncomment the next one, and run: docker compose up -d --build
+    # build: .
     container_name: printsort3d
     ports:
       - "3001:3001"

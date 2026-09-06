@@ -22,8 +22,10 @@ See [docs/architecture.md](docs/architecture.md) for how it's built, [docs/api.m
 | Folder tree & path breadcrumb | Per-file detail & 3D viewer |
 |---|---|
 | ![Folder navigation](docs/screenshots/folders.png) | ![Detail page](docs/screenshots/detail.png) |
-| **Painted / multi-material colors** | **Duplicate detection** |
-| ![Painted colors](docs/screenshots/painted-colors.png) | ![Duplicates](docs/screenshots/duplicates.png) |
+
+**Painted / multi-material colors** — per-triangle AMS filament assignments decoded from the 3MF and rendered in the viewer:
+
+![Painted colors](docs/screenshots/painted-colors.png)
 
 ## Requirements
 
@@ -57,17 +59,41 @@ On first run, the server creates `server/config.json` (empty root list) and `ser
 
 ## Running in Docker
 
-A single self-contained image (Node server serves both the API and the built client on port
-`3001`) is provided for Linux and Docker Desktop hosts:
+One self-contained image — the Node server serves the API **and** the built client on port
+`3001`, so there's nothing else to run. Works on Linux and on Docker Desktop for Windows/macOS.
+
+Every folder mounted under `/models/<name>` is registered as a source and scanned on startup,
+so the library is populated the moment the container is up — no Settings step. All mutable
+state (catalog, tags, notes, caches) lives in the `/data` volume.
+
+### Use the published image
+
+The image is published to GitHub Container Registry as `ghcr.io/amospainter/printsort3d`.
+The [`docker-compose.yml`](docker-compose.yml) in the repo root already points at it:
 
 ```sh
-MODELS_DIR=/path/to/your/print/files docker compose up -d --build
+MODELS_DIR=/path/to/your/print/files docker compose up -d
 ```
 
-Open `http://localhost:3001`. Every folder mounted under `/models/<name>` is registered as a
-source and scanned automatically on startup — mount several and they all appear, no Settings
-step needed. See [docs/docker.md](docs/docker.md) for multiple folders, volumes, Windows
-paths, and upgrades.
+Open `http://localhost:3001`. Later, `docker compose pull && docker compose up -d` gets the
+newest image. Without compose:
+
+```sh
+docker run -d --name printsort3d -p 3001:3001 -v printsort3d-data:/data -v /path/to/your/print/files:/models/prints:ro --restart unless-stopped ghcr.io/amospainter/printsort3d:latest
+```
+
+### Build your own image
+
+```sh
+docker build -t printsort3d .
+```
+
+Then use `printsort3d` in place of `ghcr.io/amospainter/printsort3d:latest` in the `docker run`
+above — or, for compose, comment out the `image:` line in [`docker-compose.yml`](docker-compose.yml),
+uncomment `build: .`, and run `docker compose up -d --build`.
+
+See [docs/docker.md](docs/docker.md) for multiple folders, persistent volumes, Windows paths,
+upgrades, and publishing new image versions.
 
 ## Building for production
 

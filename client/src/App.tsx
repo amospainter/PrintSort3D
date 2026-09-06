@@ -3,6 +3,7 @@ import { Routes, Route, Link, useLocation, useSearchParams } from 'react-router-
 import Library from './pages/Library';
 import Detail from './pages/Detail';
 import Settings from './pages/Settings';
+import ThemeToggle from './ThemeToggle';
 import { api, type FolderEntry, type RootConfig } from './api';
 import {
   ChevronDownIcon,
@@ -296,6 +297,7 @@ export default function App() {
         </div>
 
         <div className="sidebar-footer">
+          <ThemeToggle />
           <SidebarLink to="/settings" active={location.pathname === '/settings'} icon={<GearIcon />}>
             Settings
           </SidebarLink>

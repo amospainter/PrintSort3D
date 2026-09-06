@@ -52,27 +52,64 @@ can still add extra folders by hand in Settings — those persist to `/data/conf
 
 ## docker compose (recommended)
 
-A starter [`docker-compose.yml`](../docker-compose.yml) is in the repo root. It mounts one
-folder via `MODELS_DIR`; add more `- host:/models/<name>:ro` lines for additional sources.
+A starter [`docker-compose.yml`](../docker-compose.yml) is in the repo root. It pulls the
+published image `ghcr.io/amospainter/printsort3d:latest` and mounts one folder via
+`MODELS_DIR`; add more `- host:/models/<name>:ro` lines for additional sources.
 
 ```sh
-MODELS_DIR=/srv/3d-prints docker compose up -d --build
+MODELS_DIR=/srv/3d-prints docker compose up -d
 ```
 
 Open `http://localhost:3001` — the folder is already scanned and listed as a source.
 
+Update later with:
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+To build the image from a checkout instead of pulling it, comment the `image:` line in
+`docker-compose.yml` back to `build: .` and use `docker compose up -d --build`.
+
 ## Plain docker
 
 ```sh
-docker build -t printsort3d .
-
 docker run -d --name printsort3d \
   -p 3001:3001 \
   -v printsort3d-data:/data \
   -v /srv/3d-prints:/models/prints:ro \
   -v /srv/downloads/stl:/models/downloads:ro \
   --restart unless-stopped \
-  printsort3d
+  ghcr.io/amospainter/printsort3d:latest
+```
+
+(Swap in `docker build -t printsort3d .` and run `printsort3d` if you want a local build.)
+
+## Publishing the image
+
+After publishing a new master version, ship the matching Docker package with the
+standalone script (it's not wired into any git hook):
+
+```sh
+npm run publish:docker          # bash scripts/publish-docker.sh
+```
+
+or directly:
+
+```sh
+./scripts/publish-docker.sh                 # bash / git-bash / WSL
+pwsh ./scripts/publish-docker.ps1           # Windows PowerShell
+```
+
+It reads the version from `package.json`, builds `linux/amd64,linux/arm64`, and
+pushes `ghcr.io/amospainter/printsort3d:<version>` and `:latest` straight to the
+registry. Pass a version to override (`./scripts/publish-docker.sh 0.2.0`), or set
+`PLATFORM=linux/amd64` for a faster single-arch build.
+
+One-time auth (PAT with `write:packages`):
+
+```sh
+echo "$GITHUB_PAT" | docker login ghcr.io -u amospainter --password-stdin
 ```
 
 ## Notes
@@ -82,8 +119,9 @@ docker run -d --name printsort3d \
 - **The catalog stores container paths** (`/models/<name>`). If you rename a mount, its old
   catalog entries get flagged *missing*; the new name comes in as a fresh source. Keep mount
   names stable.
-- **Upgrading:** `docker compose up -d --build` again. Schema migrations in `db.ts` run on
-  startup; the `/data` volume carries your catalog across versions.
+- **Upgrading:** `docker compose pull && docker compose up -d` (or `up -d --build` for a
+  local build). Schema migrations in `db.ts` run on startup; the `/data` volume carries your
+  catalog across versions.
 - **Thumbnails for STL/OBJ** are still rendered in your browser (WebGL) the first time you
   view those files in the library, then cached under `/data`. This is unchanged by Docker.
 - **`/data` permissions are handled for you.** The container starts as root only long enough

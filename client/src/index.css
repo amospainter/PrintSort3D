@@ -10,11 +10,11 @@
   --text-muted: #6b6b70;
   --border: #e0e0e0;
   --border-strong: #c7c7cc;
-  --accent: #d97a3d;
-  --accent-hover: #c96a2f;
+  --accent: #2f6fdb;
+  --accent-hover: #2860c4;
   --accent-contrast: #ffffff;
-  --accent-soft-bg: #f5e4d8;
-  --accent-soft-text: #9a4f1c;
+  --accent-soft-bg: #dbe7fb;
+  --accent-soft-text: #1b478f;
   --warn-bg: #f5d9a8;
   --warn-text: #7a5211;
   --danger: #c94040;
@@ -28,9 +28,23 @@
 
 /* This app's reference design (see project notes) is a dark, sidebar-driven desktop-style
    catalog app — so unlike a typical "light by default" web app, dark is the primary,
-   most-polished palette here and light is the fallback for prefers-color-scheme: light. */
+   most-polished palette here.
+
+   Theme resolution (see client/src/theme.ts + the pre-paint script in index.html):
+   - no [data-theme]  → follow the OS via prefers-color-scheme (the "System" setting)
+   - [data-theme="light"] / [data-theme="dark"] → explicit override, wins over the OS
+   The dark token values below are duplicated in two selectors on purpose — keep them
+   in sync. */
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     --bg: #19191b;
     --bg-elevated: #232326;
     --bg-sunken: #141416;
@@ -39,11 +53,11 @@
     --text-muted: #8b8b92;
     --border: #2a2a2e;
     --border-strong: #3a3a40;
-    --accent: #e08a4c;
-    --accent-hover: #ea9a5f;
-    --accent-contrast: #1a1006;
-    --accent-soft-bg: #3a2c1e;
-    --accent-soft-text: #f0b784;
+    --accent: #5c9bf5;
+    --accent-hover: #77abf7;
+    --accent-contrast: #0b1220;
+    --accent-soft-bg: #1d2e49;
+    --accent-soft-text: #aecaf5;
     --warn-bg: #4a3a1c;
     --warn-text: #f0c988;
     --danger: #e57575;
@@ -51,6 +65,28 @@
     --shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.6);
   }
+}
+
+:root[data-theme='dark'] {
+  --bg: #19191b;
+  --bg-elevated: #232326;
+  --bg-sunken: #141416;
+  --sidebar-bg: #141416;
+  --text: #eeeeef;
+  --text-muted: #8b8b92;
+  --border: #2a2a2e;
+  --border-strong: #3a3a40;
+  --accent: #5c9bf5;
+  --accent-hover: #77abf7;
+  --accent-contrast: #0b1220;
+  --accent-soft-bg: #1d2e49;
+  --accent-soft-text: #aecaf5;
+  --warn-bg: #4a3a1c;
+  --warn-text: #f0c988;
+  --danger: #e57575;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.6);
 }
 
 * {
@@ -306,6 +342,54 @@ a {
   margin-top: auto;
   padding-top: 12px;
   border-top: 1px solid var(--border);
+}
+
+/* Three-way colour-theme control (System / Light / Dark), sits above Settings. */
+.theme-toggle {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 6px;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+}
+
+.theme-toggle-option {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 2px;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.theme-toggle-option svg {
+  width: 15px;
+  height: 15px;
+}
+
+.theme-toggle-option:hover {
+  color: var(--text);
+}
+
+.theme-toggle-option.active {
+  background: var(--bg-elevated);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle-option {
+    transition: none;
+  }
 }
 
 @keyframes spin {
