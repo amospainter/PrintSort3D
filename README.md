@@ -55,6 +55,20 @@ Open `http://localhost:5173` in your browser.
 
 On first run, the server creates `server/config.json` (empty root list) and `server/catalog.db` (SQLite). Go to the **Settings** page in the app to add folders you want scanned, then click **Rescan now**.
 
+## Running in Docker
+
+A single self-contained image (Node server serves both the API and the built client on port
+`3001`) is provided for Linux and Docker Desktop hosts:
+
+```sh
+MODELS_DIR=/path/to/your/print/files docker compose up -d --build
+```
+
+Open `http://localhost:3001`. Every folder mounted under `/models/<name>` is registered as a
+source and scanned automatically on startup — mount several and they all appear, no Settings
+step needed. See [docs/docker.md](docs/docker.md) for multiple folders, volumes, Windows
+paths, and upgrades.
+
 ## Building for production
 
 ```sh
@@ -62,8 +76,13 @@ npm run build --prefix server
 npm run build --prefix client
 ```
 
-- `server/dist/index.js` — compiled server; run with `node server/dist/index.js` (serves the API only; put a static file server or reverse proxy in front for the built client if you want a single deployable unit)
+- `server/dist/index.js` — compiled server; run with `node server/dist/index.js`
 - `client/dist/` — static client build
+
+If a built client is found next to the server (`../client/dist`, or wherever `CLIENT_DIST`
+points), the server serves it — API and UI on one port, no reverse proxy needed. This is
+how the Docker image runs. Without a build present (dev), Vite serves the client and proxies
+`/api` to the server.
 
 ## Running tests
 

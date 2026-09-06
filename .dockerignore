@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+client/dist
+server/dist
+**/*.db
+**/*.db-wal
+**/*.db-shm
+server/config.json
+server/thumbnails
+server/assets
+.git
+.gitignore
+.claude
+docs/screenshots
+**/*.log
+data

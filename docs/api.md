@@ -145,11 +145,20 @@ Returns the directory tree derived from every file's `relative_path` (there is n
 
 ## `GET /api/roots`
 
-Returns the configured root folders: `{ label: string, path: string }[]`.
+Returns the configured root folders: `{ label: string, path: string, managed?: boolean }[]`.
+
+`managed: true` marks a root injected from the environment (`PRINTSORT_ROOTS` or
+`PRINTSORT_MODELS_DIR` — see [docker.md](docker.md)) rather than added through Settings.
+Managed roots aren't written to `config.json`, are re-derived on every request, and can't be
+removed via `PUT /api/roots`. User-added roots have no `managed` key.
 
 ## `PUT /api/roots`
 
-Replaces the entire root folder list. Body: `{ label: string, path: string }[]` (a bare array, not wrapped in an object). Returns the same array back, or `400` if the body isn't an array.
+Replaces the **user-managed** portion of the root folder list. Body: `{ label: string, path:
+string }[]` (a bare array, not wrapped in an object). Returns the effective list — the roots
+as saved plus any managed roots re-derived from the environment — or `400` if the body isn't
+an array. Managed roots in the payload are ignored on write and can't be removed; omitting
+one does **not** delete its catalog entries.
 
 Note: this only updates `config.json` and the `roots` table — it does **not** scan. Call `POST /api/scan` afterward to pick up files from a newly added root.
 

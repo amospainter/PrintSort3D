@@ -16,7 +16,7 @@ The client talks to the server only over HTTP (`/api/*`, proxied by Vite in dev 
 | `src/index.ts` | Entry point: wires up `db`, `paths`, and `createApp()`, then listens on `PORT` (default 3001). |
 | `src/app.ts` | Builds the Express app (`createApp()`) without binding a port, so it can be reused directly in tests via Supertest. |
 | `src/db.ts` | Opens the SQLite database (Node's built-in `node:sqlite`, no native build step) and runs the schema migrations (`CREATE TABLE IF NOT EXISTS ...`) on load. |
-| `src/config.ts` | Reads/writes `config.json` (the list of watched root folders). Creates an empty one on first run. |
+| `src/config.ts` | Reads/writes `config.json` (the user's watched root folders). Creates an empty one on first run. Also merges in **env-derived roots** (`PRINTSORT_ROOTS` / `PRINTSORT_MODELS_DIR`), flagged `managed: true` — see below. |
 | `src/paths.ts` | Resolves and creates the `thumbnails/` and `assets/` cache directories. |
 | `src/scanner.ts` | Walks each configured root looking for `.stl` / `.3mf` / `.obj` files, upserts rows into `files`, and flags rows that disappeared as `missing` instead of deleting them. For every file (any extension), computes and stores model dimensions via `dimensions.ts`. For `.3mf` files specifically, also calls into `threeMf.ts` for the primary thumbnail/metadata and `assets.ts` for the full embedded-image gallery. Async — awaits WebP conversion per 3MF file. |
 | `src/dimensions.ts` | `computeDimensions(filePath, ext)` — bounding-box width/height/depth, computed once at scan time (not per page view) with no rendering involved: STL (binary or ASCII, auto-detected by whether the file size matches the binary header's triangle count) and OBJ are parsed directly as bytes/text; 3MF vertex data is read out of its zipped XML. Returns `null` if the file can't be parsed or has no vertices — never throws. |
@@ -27,6 +27,23 @@ The client talks to the server only over HTTP (`/api/*`, proxied by Vite in dev 
 ### Why `node:sqlite` instead of `better-sqlite3`
 
 `better-sqlite3` ships a native addon that needs to be compiled per-platform (`node-gyp`), which is a common source of friction on Windows. Node 22.5+ ships a built-in `node:sqlite` module with a near-identical synchronous API (`db.prepare(sql).get/all/run(...)`), so the app uses that instead — zero native build step, works out of the box.
+
+### Env-derived (managed) roots
+
+`loadConfig()` returns the union of the user's `config.json` roots and roots derived from the
+environment on every call:
+
+- `PRINTSORT_MODELS_DIR=<dir>` — every immediate subdirectory of `<dir>` becomes a root
+  (label = the subdirectory name). Re-read each call, so a newly-mounted folder appears
+  without a restart.
+- `PRINTSORT_ROOTS` — an explicit `;`/newline-separated list of `Label=/path` or `/path`.
+
+These carry `managed: true`. `saveConfig()` strips managed roots before writing (they're
+re-derived, never persisted); `PUT /api/roots` refuses to remove them and won't delete their
+catalog entries even if the payload omits them. The Docker image sets `PRINTSORT_MODELS_DIR=
+/models`, so `docker run -v host:/models/<name>:ro` is all it takes to add a scanned source.
+`index.ts` runs one `runScan()` after `listen()` when `SCAN_ON_STARTUP` is truthy (set in
+the image) so mounts are catalogued without a manual rescan.
 
 ### Why thumbnails are mostly generated client-side
 

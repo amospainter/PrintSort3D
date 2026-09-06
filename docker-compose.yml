@@ -1,0 +1,22 @@
+services:
+  printsort3d:
+    build: .
+    image: printsort3d
+    container_name: printsort3d
+    ports:
+      - "3001:3001"
+    volumes:
+      # Persistent app state: SQLite catalog, config.json, thumbnail + asset caches.
+      - printsort3d-data:/data
+
+      # Each folder of print files you want catalogued goes under /models/<name>, read-only.
+      # Every immediate subdirectory of /models is picked up automatically as a watched
+      # source (PRINTSORT_MODELS_DIR=/models, set in the Dockerfile) and scanned on startup —
+      # nothing to add in the Settings page. The <name> becomes the source label.
+      - ${MODELS_DIR:-./models}:/models/prints:ro
+      # - /srv/downloads/stl:/models/downloads:ro
+      # - /mnt/nas/3d:/models/nas:ro
+    restart: unless-stopped
+
+volumes:
+  printsort3d-data:

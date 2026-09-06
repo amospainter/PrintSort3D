@@ -8,3 +8,7 @@ server/config.json
 server/catalog.db-wal
 server/catalog.db-shm
 
+# Docker compose default bind-mount target for local model files
+/models/
+/data/
+

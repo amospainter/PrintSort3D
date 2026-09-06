@@ -91,13 +91,22 @@ export default function Settings() {
           <tbody>
             {roots.map((r) => (
               <tr key={r.path}>
-                <td>{r.label}</td>
+                <td>
+                  {r.label}
+                  {r.managed && <span className="muted"> · auto</span>}
+                </td>
                 <td>{r.path}</td>
                 <td>
                   <button disabled={scanBusy} onClick={() => scan(r.label)}>
                     {scanningRoot === r.label ? 'Scanning...' : 'Rescan'}
                   </button>{' '}
-                  <button onClick={() => removeRoot(r.path)}>Remove</button>
+                  {r.managed ? (
+                    <span className="muted" title="Configured via the environment (e.g. a Docker mount)">
+                      from environment
+                    </span>
+                  ) : (
+                    <button onClick={() => removeRoot(r.path)}>Remove</button>
+                  )}
                 </td>
               </tr>
             ))}

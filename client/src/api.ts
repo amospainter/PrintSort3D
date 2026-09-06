@@ -73,6 +73,7 @@ export interface FileEntry {
 export interface RootConfig {
   label: string;
   path: string;
+  managed?: boolean; // env-provided (e.g. Docker mount) — always scanned, not user-removable
 }
 
 export interface FolderEntry {

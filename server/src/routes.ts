@@ -427,9 +427,15 @@ router.put('/roots', (req, res) => {
   // A root dropped from the list is gone for good (the user removed it deliberately),
   // so its catalog entries are deleted here rather than left to linger forever —
   // the scanner's missing-flag pass only ever looks at *currently configured* roots.
-  const keptPaths = new Set(roots.map((r) => r.path));
+  // Managed (env-derived) roots are exempt: they're owned by the deployment and can't be
+  // removed via the API, so a payload that omits one must not wipe its catalog entries.
+  const norm = (p: string) => path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+  const managedPaths = new Set(loadConfig().roots.filter((r) => r.managed).map((r) => norm(r.path)));
+  const keptPaths = new Set(roots.map((r) => norm(r.path)));
   const existingRoots = db.prepare('SELECT id, path FROM roots').all() as { id: number; path: string }[];
-  const removedRootIds = existingRoots.filter((r) => !keptPaths.has(r.path)).map((r) => r.id);
+  const removedRootIds = existingRoots
+    .filter((r) => !keptPaths.has(norm(r.path)) && !managedPaths.has(norm(r.path)))
+    .map((r) => r.id);
 
   for (const rootId of removedRootIds) {
     const fileRows = db.prepare('SELECT id, thumbnail_path FROM files WHERE root_id = ?').all(rootId) as {
@@ -452,7 +458,9 @@ router.put('/roots', (req, res) => {
   }
 
   saveConfig({ ...loadConfig(), roots });
-  res.json(roots);
+  // Echo back the effective list (user roots as saved, plus any managed roots re-derived
+  // from the environment) so the client stays in sync with what GET /api/roots returns.
+  res.json(loadConfig().roots);
 });
 
 router.get('/settings', (_req, res) => {
