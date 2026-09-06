@@ -1,8 +1,8 @@
 node_modules/
 dist/
 *.db
-server/thumbnails/*.png
 server/assets/
+server/thumbnails/
 server/config.json
 .DS_Store
 server/catalog.db-wal

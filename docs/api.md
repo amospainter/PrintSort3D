@@ -15,7 +15,7 @@ Returned by every endpoint below that mentions "a file object":
   mtime: number,                  // file's last-modified time, ms since epoch
   addedAt: number,                // when the row was first inserted, ms since epoch
   notes: string,
-  thumbnailUrl: string | null,    // e.g. "/api/thumbnails/12.png", or null if not generated yet
+  thumbnailUrl: string | null,    // e.g. "/api/files/12/thumbnail", or null if not generated yet
   missing: boolean,                // true if not found on the last scan
   root: { label: string, path: string },
   relativePath: string,           // path relative to root.path
@@ -170,11 +170,11 @@ Upload a generated thumbnail for a file (used by the client's in-browser rendere
 { imageBase64: string }  // a data URL (e.g. "data:image/png;base64,...") or bare base64
 ```
 
-Saves to `server/thumbnails/<id>.png` and updates the file's `thumbnail_path`. Returns `{ ok: true }`, or `404` if the id doesn't exist, or `400` if `imageBase64` is missing.
+Saves to `server/assets/<id>/thumbnail.png` and updates the file's `thumbnail_path`. Returns `{ ok: true }`, or `404` if the id doesn't exist, or `400` if `imageBase64` is missing.
 
-## `GET /api/thumbnails/:filename`
+## `GET /api/files/:id/thumbnail`
 
-Serves a cached thumbnail PNG. `:filename` must match `^\d+\.png$` (a bare numeric id) — anything else is rejected with `400` before touching the filesystem, and a missing file returns `404`.
+Serves a file's cached thumbnail PNG from `server/assets/<id>/thumbnail.png`. `400` if `:id` isn't an integer, `404` if no thumbnail has been cached for it yet.
 
 ## `GET /api/raw/:id`
 

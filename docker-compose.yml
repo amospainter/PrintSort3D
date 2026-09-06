@@ -7,7 +7,7 @@ services:
       - "3001:3001"
     volumes:
       # Persistent app state: SQLite catalog, config.json, thumbnail + asset caches.
-      - printsort3d-data:/data
+      - ${DATA_DIR:-./data}:/data
 
       # Each folder of print files you want catalogued goes under /models/<name>, read-only.
       # Every immediate subdirectory of /models is picked up automatically as a watched
@@ -17,6 +17,3 @@ services:
       # - /srv/downloads/stl:/models/downloads:ro
       # - /mnt/nas/3d:/models/nas:ro
     restart: unless-stopped
-
-volumes:
-  printsort3d-data:

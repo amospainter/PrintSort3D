@@ -39,6 +39,25 @@ export async function cacheThreeMfImages(fileId: number, filePath: string): Prom
   return savedNames;
 }
 
+export const THUMBNAIL_FILENAME = 'thumbnail.png';
+
+/**
+ * Writes a file's thumbnail PNG alongside its other cached assets at
+ * ASSETS_DIR/<fileId>/thumbnail.png. Returns the stored filename (for `files.thumbnail_path`).
+ * Feeds both pipelines: 3MF embedded plate renders (scanner) and client-rendered
+ * STL/OBJ thumbnails (POST /api/files/:id/thumbnail).
+ */
+export function saveThumbnail(fileId: number, buffer: Buffer): string {
+  const outDir = path.join(ASSETS_DIR, String(fileId));
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, THUMBNAIL_FILENAME), buffer);
+  return THUMBNAIL_FILENAME;
+}
+
+export function thumbnailFilePath(fileId: number): string {
+  return path.join(ASSETS_DIR, String(fileId), THUMBNAIL_FILENAME);
+}
+
 export const BAKED_MESH_FILENAME = 'mesh.bin.gz';
 const MESH_MAGIC = 0x314d5350; // "PSM1" little-endian
 

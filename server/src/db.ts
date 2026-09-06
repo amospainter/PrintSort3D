@@ -1,5 +1,7 @@
+import fs from 'fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
+import { ASSETS_DIR } from './paths';
 
 const DB_PATH = process.env.DB_PATH ?? path.join(__dirname, '..', 'catalog.db');
 
@@ -90,6 +92,28 @@ const tagColumns = new Set(
 );
 if (!tagColumns.has('color')) {
   db.exec('ALTER TABLE tags ADD COLUMN color TEXT');
+}
+
+// One-time filesystem migration: thumbnails used to live in their own directory as
+// `<id>.png`; they're now unified under ASSETS_DIR/<id>/thumbnail.png with the rest of a
+// file's cached assets. Move any leftovers from the old layout, then drop its directory.
+const legacyThumbnailsDir = process.env.THUMBNAILS_DIR ?? path.join(__dirname, '..', 'thumbnails');
+try {
+  if (fs.existsSync(legacyThumbnailsDir)) {
+    for (const name of fs.readdirSync(legacyThumbnailsDir)) {
+      const match = /^(\d+)\.png$/.exec(name);
+      if (!match) continue;
+      const destDir = path.join(ASSETS_DIR, match[1]);
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.renameSync(path.join(legacyThumbnailsDir, name), path.join(destDir, 'thumbnail.png'));
+    }
+    fs.rmSync(legacyThumbnailsDir, { recursive: true, force: true });
+  }
+  db.exec(
+    "UPDATE files SET thumbnail_path = 'thumbnail.png' WHERE thumbnail_path IS NOT NULL AND thumbnail_path <> 'thumbnail.png'"
+  );
+} catch (err) {
+  console.error('Thumbnail unification migration failed:', err);
 }
 
 // Safe to run unconditionally: these reference columns guaranteed to exist by this point

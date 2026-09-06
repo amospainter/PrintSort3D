@@ -8,13 +8,15 @@ proxy to set up. It runs on Linux (amd64/arm64) and on Docker Desktop for Window
 
 | Path | What it is | How to mount it |
 |---|---|---|
-| `/data` | All mutable state — `catalog.db` (SQLite), `config.json`, `thumbnails/`, `assets/` | A named volume or a bind mount. **Persist this** or you lose your catalog, tags, and notes. |
+| `/data` | All mutable state — `catalog.db` (SQLite), `config.json`, `assets/` (per-file thumbnail + image + baked-mesh cache) | A named volume or a bind mount. **Persist this** or you lose your catalog, tags, and notes. |
 | `/models` | Where you mount your folders of `.stl` / `.3mf` / `.obj` / `.zip` files | One or more read-only (`:ro`) bind mounts, one per folder, each under its own name. |
 | `3001` | HTTP port | Publish to a host port. |
 
-The server reads its paths from env vars (`DB_PATH`, `CONFIG_PATH`, `THUMBNAILS_DIR`,
-`ASSETS_DIR`, `CLIENT_DIST`, `PORT`) — the Dockerfile already points the first four at
-`/data`, so you normally don't touch them.
+The server reads its paths from env vars (`DB_PATH`, `CONFIG_PATH`, `ASSETS_DIR`,
+`CLIENT_DIST`, `PORT`) — the Dockerfile already points the first three at
+`/data`, so you normally don't touch them. (Upgrading a volume that still has a
+`/data/thumbnails` from an older image? Set `THUMBNAILS_DIR=/data/thumbnails` once so
+`db.ts` migrates those PNGs into `/data/assets/<id>/thumbnail.png`, then remove it.)
 
 ## Model folders are picked up automatically
 
@@ -84,5 +86,8 @@ docker run -d --name printsort3d \
   startup; the `/data` volume carries your catalog across versions.
 - **Thumbnails for STL/OBJ** are still rendered in your browser (WebGL) the first time you
   view those files in the library, then cached under `/data`. This is unchanged by Docker.
-- The container runs as the non-root `node` user; the `/data` volume is chowned to it on
-  build. If you bind-mount a host directory for `/data`, make sure it's writable by UID 1000.
+- **`/data` permissions are handled for you.** The container starts as root only long enough
+  for its entrypoint to `chown` `/data` to the unprivileged `node` user (UID 1000), then
+  drops to that user via `gosu` to run the server — so a bind mount owned by root on the host
+  works without any manual `chown`. Set `PRINTSORT_SKIP_CHOWN=1` to skip that step (read-only
+  `/data`, or a very large catalog where the recursive chown is slow).

@@ -1,11 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 
-export const THUMBNAILS_DIR = process.env.THUMBNAILS_DIR ?? path.join(__dirname, '..', 'thumbnails');
+// Every per-file cached artifact — the thumbnail PNG, embedded-image WebPs, and the baked
+// render mesh — lives under ASSETS_DIR/<fileId>/. (Thumbnails used to have their own
+// THUMBNAILS_DIR; db.ts migrates any leftovers from that layout on startup.)
 export const ASSETS_DIR = process.env.ASSETS_DIR ?? path.join(__dirname, '..', 'assets');
 
-for (const dir of [THUMBNAILS_DIR, ASSETS_DIR]) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+if (!fs.existsSync(ASSETS_DIR)) {
+  fs.mkdirSync(ASSETS_DIR, { recursive: true });
 }

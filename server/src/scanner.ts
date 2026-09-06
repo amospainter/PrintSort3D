@@ -3,8 +3,7 @@ import path from 'path';
 import { db } from './db';
 import { loadConfig } from './config';
 import { extractThreeMfData, groupImagesByPlate, computePlateBuildIndices, computePlateNames } from './threeMf';
-import { THUMBNAILS_DIR } from './paths';
-import { cacheThreeMfImages, cacheBakedMesh } from './assets';
+import { cacheThreeMfImages, cacheBakedMesh, saveThumbnail } from './assets';
 import { computeDimensions } from './dimensions';
 import { computeContentHash, computeGeometryHash } from './fingerprint';
 import { listArchiveModelEntries } from './archive';
@@ -255,10 +254,4 @@ export async function runScan(options: { rootLabel?: string } = {}): Promise<Sca
   }
 
   return result;
-}
-
-function saveThumbnail(fileId: number, buffer: Buffer): string {
-  const filename = `${fileId}.png`;
-  fs.writeFileSync(path.join(THUMBNAILS_DIR, filename), buffer);
-  return filename;
 }

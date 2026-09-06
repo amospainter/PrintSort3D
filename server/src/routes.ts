@@ -4,8 +4,8 @@ import path from 'path';
 import { db } from './db';
 import { loadConfig, saveConfig, RootConfig, PlateSize } from './config';
 import { runScan, rescanFile } from './scanner';
-import { THUMBNAILS_DIR, ASSETS_DIR } from './paths';
-import { deleteCachedImages, BAKED_MESH_FILENAME } from './assets';
+import { ASSETS_DIR } from './paths';
+import { deleteCachedImages, saveThumbnail, thumbnailFilePath, BAKED_MESH_FILENAME } from './assets';
 import { listArchiveModelEntries, readArchiveEntry } from './archive';
 
 export const router = Router();
@@ -87,7 +87,7 @@ function serializeFile(row: FileRow, defaultPlateSize: PlateSize) {
     mtime: row.mtime,
     addedAt: row.added_at,
     notes: row.notes,
-    thumbnailUrl: row.thumbnail_path ? `/api/thumbnails/${row.id}.png` : null,
+    thumbnailUrl: row.thumbnail_path ? `/api/files/${row.id}/thumbnail` : null,
     missing: !!row.missing,
     root: { label: row.root_label, path: row.root_path },
     relativePath: row.relative_path,
@@ -438,18 +438,11 @@ router.put('/roots', (req, res) => {
     .map((r) => r.id);
 
   for (const rootId of removedRootIds) {
-    const fileRows = db.prepare('SELECT id, thumbnail_path FROM files WHERE root_id = ?').all(rootId) as {
+    const fileRows = db.prepare('SELECT id FROM files WHERE root_id = ?').all(rootId) as {
       id: number;
-      thumbnail_path: string | null;
     }[];
     for (const f of fileRows) {
-      if (f.thumbnail_path) {
-        try {
-          fs.unlinkSync(path.join(THUMBNAILS_DIR, f.thumbnail_path));
-        } catch {
-          // thumbnail already gone; nothing to clean up
-        }
-      }
+      // Removes the whole ASSETS_DIR/<id>/ tree — thumbnail, embedded WebPs, and baked mesh.
       deleteCachedImages(f.id);
     }
     db.prepare('DELETE FROM file_tags WHERE file_id IN (SELECT id FROM files WHERE root_id = ?)').run(rootId);
@@ -490,17 +483,17 @@ router.post('/files/:id/thumbnail', (req, res) => {
 
   const base64Data = imageBase64.replace(/^data:image\/png;base64,/, '');
   const buffer = Buffer.from(base64Data, 'base64');
-  fs.writeFileSync(path.join(THUMBNAILS_DIR, `${id}.png`), buffer);
-  db.prepare('UPDATE files SET thumbnail_path = ? WHERE id = ?').run(`${id}.png`, id);
+  const stored = saveThumbnail(id, buffer);
+  db.prepare('UPDATE files SET thumbnail_path = ? WHERE id = ?').run(stored, id);
   res.json({ ok: true });
 });
 
-router.get('/thumbnails/:filename', (req, res) => {
-  const filename = req.params.filename;
-  if (!/^\d+\.png$/.test(filename)) return res.status(400).end();
-  const filePath = path.join(THUMBNAILS_DIR, filename);
+router.get('/files/:id/thumbnail', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).end();
+  const filePath = thumbnailFilePath(id);
   if (!fs.existsSync(filePath)) return res.status(404).end();
-  res.sendFile(filePath);
+  res.type('png').sendFile(filePath);
 });
 
 router.get('/files/:id/mesh', (req, res) => {

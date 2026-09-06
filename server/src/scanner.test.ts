@@ -23,7 +23,6 @@ beforeAll(async () => {
 
   process.env.DB_PATH = path.join(tmpRoot, 'test.db');
   process.env.CONFIG_PATH = path.join(tmpRoot, 'config.json');
-  process.env.THUMBNAILS_DIR = path.join(tmpRoot, 'thumbnails');
   process.env.ASSETS_DIR = path.join(tmpRoot, 'assets');
 
   ({ db } = await import('./db'));
@@ -132,8 +131,9 @@ describe('runScan', () => {
     expect(row.dimension_y).toBeCloseTo(12);
     expect(row.dimension_z).toBeCloseTo(8);
 
-    const thumbPath = path.join(process.env.THUMBNAILS_DIR!, row.thumbnail_path);
+    const thumbPath = path.join(process.env.ASSETS_DIR!, String(row.id), row.thumbnail_path);
     expect(fs.existsSync(thumbPath)).toBe(true);
+    expect(row.thumbnail_path).toBe('thumbnail.png');
   });
 
   it('stores the full multi-color filament list (normalized) as filaments_json', async () => {

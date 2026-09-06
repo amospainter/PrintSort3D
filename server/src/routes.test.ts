@@ -22,9 +22,7 @@ beforeAll(async () => {
 
   process.env.DB_PATH = path.join(tmpRoot, 'test.db');
   process.env.CONFIG_PATH = path.join(tmpRoot, 'config.json');
-  process.env.THUMBNAILS_DIR = path.join(tmpRoot, 'thumbnails');
   process.env.ASSETS_DIR = path.join(tmpRoot, 'assets');
-  fs.mkdirSync(process.env.THUMBNAILS_DIR, { recursive: true });
   fs.mkdirSync(process.env.ASSETS_DIR, { recursive: true });
 
   ({ db } = await import('./db'));
@@ -254,15 +252,15 @@ describe('thumbnail routes', () => {
     expect(upload.status).toBe(200);
 
     const fileRes = await request(app).get(`/api/files/${fileId}`);
-    expect(fileRes.body.thumbnailUrl).toBe(`/api/thumbnails/${fileId}.png`);
+    expect(fileRes.body.thumbnailUrl).toBe(`/api/files/${fileId}/thumbnail`);
 
-    const imgRes = await request(app).get(`/api/thumbnails/${fileId}.png`);
+    const imgRes = await request(app).get(`/api/files/${fileId}/thumbnail`);
     expect(imgRes.status).toBe(200);
   });
 
-  it('rejects thumbnail filenames that are not a bare numeric id', async () => {
-    const res = await request(app).get('/api/thumbnails/../../etc/passwd.png');
-    expect([400, 404]).toContain(res.status);
+  it('returns 404 for a file with no cached thumbnail', async () => {
+    const res = await request(app).get('/api/files/99999/thumbnail');
+    expect(res.status).toBe(404);
   });
 });
 
