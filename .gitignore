@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.db
+server/thumbnails/*.png
+server/assets/
+server/config.json
+.DS_Store
+server/catalog.db-wal
+server/catalog.db-shm
+
