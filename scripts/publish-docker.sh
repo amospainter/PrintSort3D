@@ -28,10 +28,19 @@ fi
 echo "Publishing ${IMAGE}:${VERSION} and ${IMAGE}:latest  (${PLATFORM})"
 echo
 
+# The default buildx builder uses the "docker" driver, which can't do multi-platform
+# builds. Spin up (once) a dedicated "docker-container" builder and use it for this build.
+BUILDER="printsort3d-builder"
+if ! docker buildx inspect "${BUILDER}" >/dev/null 2>&1; then
+  echo "Creating buildx builder '${BUILDER}' (docker-container driver)..."
+  docker buildx create --name "${BUILDER}" --driver docker-container --bootstrap >/dev/null
+fi
+
 # A multi-platform build must go straight to the registry (buildx can't --load a
 # multi-arch manifest into the local daemon). --provenance=false keeps the package
 # page showing a plain image, not an OCI index with an attestation entry.
 docker buildx build \
+  --builder "${BUILDER}" \
   --platform "${PLATFORM}" \
   --provenance=false \
   -t "${IMAGE}:${VERSION}" \

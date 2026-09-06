@@ -258,22 +258,38 @@ router.patch('/files/:id', (req, res) => {
 
   const { notes, tags } = req.body as { notes?: string; tags?: string[] };
 
-  if (typeof notes === 'string') {
-    db.prepare('UPDATE files SET notes = ? WHERE id = ?').run(notes, id);
-  }
+  // One transaction so a failure partway through the tag rebuild can't leave the file with
+  // its old tags deleted and the new ones not written (which looked like "tags didn't save").
+  try {
+    db.exec('BEGIN IMMEDIATE');
 
-  if (Array.isArray(tags)) {
-    db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(id);
-    for (const rawName of tags) {
-      const name = rawName.trim().toLowerCase();
-      if (!name) continue;
-      let tagRow = db.prepare('SELECT id FROM tags WHERE name = ?').get(name) as { id: number } | undefined;
-      if (!tagRow) {
-        const info = db.prepare('INSERT INTO tags (name) VALUES (?)').run(name);
-        tagRow = { id: info.lastInsertRowid as number };
-      }
-      db.prepare('INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)').run(id, tagRow.id);
+    if (typeof notes === 'string') {
+      db.prepare('UPDATE files SET notes = ? WHERE id = ?').run(notes, id);
     }
+
+    if (Array.isArray(tags)) {
+      db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(id);
+      for (const rawName of tags) {
+        const name = rawName.trim().toLowerCase();
+        if (!name) continue;
+        let tagRow = db.prepare('SELECT id FROM tags WHERE name = ?').get(name) as { id: number } | undefined;
+        if (!tagRow) {
+          const info = db.prepare('INSERT INTO tags (name) VALUES (?)').run(name);
+          tagRow = { id: info.lastInsertRowid as number };
+        }
+        db.prepare('INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)').run(id, tagRow.id);
+      }
+    }
+
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* no active transaction */
+    }
+    console.error(`Failed to update file ${id}:`, err);
+    return res.status(500).json({ error: 'update failed', message: err instanceof Error ? err.message : String(err) });
   }
 
   const row = db.prepare(BASE_QUERY + ' WHERE f.id = ?').get(id) as unknown as FileRow;

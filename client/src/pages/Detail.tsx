@@ -118,6 +118,9 @@ export default function Detail() {
   const [arrayBuffer, setArrayBuffer] = useState<ArrayBuffer | null>(null);
   const [notes, setNotes] = useState('');
   const [tagDraft, setTagDraft] = useState<string[]>([]);
+  // The tag text currently typed into TagInput but not yet turned into a chip. saveTags folds
+  // it in so "type a tag, click Save" (without pressing Enter) still persists it.
+  const [pendingTag, setPendingTag] = useState('');
   const [allTags, setAllTags] = useState<TagInfo[]>([]);
   const tagNames = useMemo(() => allTags.map((t) => t.name), [allTags]);
   const tagColors = useMemo(() => tagColorMap(allTags), [allTags]);
@@ -137,6 +140,7 @@ export default function Detail() {
       setFile(f);
       setNotes(f.notes);
       setTagDraft(f.tags);
+      setPendingTag('');
       setActivePlateIndex(null); // "All plates" by default — matches the pre-plate-switcher 3D view
       setLoadFull(false);
       setArrayBuffer(null);
@@ -191,12 +195,15 @@ export default function Detail() {
   };
 
   const saveTags = () => {
+    const pending = pendingTag.trim().toLowerCase();
+    const tags = pending && !tagDraft.includes(pending) ? [...tagDraft, pending] : tagDraft;
     setSaving(true);
     api
-      .updateFile(fileId, { tags: tagDraft })
+      .updateFile(fileId, { tags })
       .then((f) => {
         setFile(f);
         setTagDraft(f.tags);
+        setPendingTag('');
       })
       .finally(() => setSaving(false));
   };
@@ -359,7 +366,14 @@ export default function Detail() {
 
           <section>
             <h3>Tags</h3>
-            <TagInput value={tagDraft} onChange={setTagDraft} suggestions={tagNames} colors={tagColors} placeholder="Add a tag…" />
+            <TagInput
+              value={tagDraft}
+              onChange={setTagDraft}
+              onDraftChange={setPendingTag}
+              suggestions={tagNames}
+              colors={tagColors}
+              placeholder="Add a tag…"
+            />
             <button disabled={saving} onClick={saveTags}>Save tags</button>
           </section>
 

@@ -106,6 +106,12 @@ pushes `ghcr.io/amospainter/printsort3d:<version>` and `:latest` straight to the
 registry. Pass a version to override (`./scripts/publish-docker.sh 0.2.0`), or set
 `PLATFORM=linux/amd64` for a faster single-arch build.
 
+The multi-arch build needs a buildx builder on the `docker-container` driver (the
+default `docker` driver can't cross-build). The script creates one named
+`printsort3d-builder` on first run and reuses it after — nothing to set up. (If you
+prefer, enabling the containerd image store in Docker Desktop's settings also works,
+and you can then delete that builder with `docker buildx rm printsort3d-builder`.)
+
 One-time auth (PAT with `write:packages`):
 
 ```sh

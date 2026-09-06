@@ -11,14 +11,21 @@ interface TagInputProps {
   // a tag with no entry here still gets a stable colour from tagChipStyle's name-hash
   // fallback, so chips are never left flat/uncoloured even before this is wired up.
   colors?: Map<string, string | null>;
+  // Notified as the user types in the not-yet-committed input. Lets a parent "Save" button
+  // fold in a tag the user typed but never pressed Enter on — see Detail.tsx's saveTags.
+  onDraftChange?: (draft: string) => void;
 }
 
 // Chip-style tag editor with a live-filtered autocomplete dropdown drawn from the
 // catalog's existing tag vocabulary (api.listTags()) — lets you reuse an existing tag by
 // typing a few letters instead of retyping it exactly, and still add a brand-new tag by
 // typing one that doesn't match anything and pressing Enter/comma.
-export function TagInput({ value, onChange, suggestions, placeholder, className, colors }: TagInputProps) {
-  const [draft, setDraft] = useState('');
+export function TagInput({ value, onChange, suggestions, placeholder, className, colors, onDraftChange }: TagInputProps) {
+  const [draft, setDraftState] = useState('');
+  const setDraft = (v: string) => {
+    setDraftState(v);
+    onDraftChange?.(v);
+  };
   const [highlighted, setHighlighted] = useState(0);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -89,6 +96,12 @@ export function TagInput({ value, onChange, suggestions, placeholder, className,
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
+        onBlur={() => {
+          // Commit whatever's half-typed when focus leaves the field (e.g. the user typed a
+          // tag and clicked "Save tags" without pressing Enter first). The suggestion buttons
+          // use onMouseDown+preventDefault, so picking one doesn't trigger this.
+          if (draft.trim()) commit(draft);
+        }}
         onKeyDown={handleKeyDown}
       />
       {open && filtered.length > 0 && (

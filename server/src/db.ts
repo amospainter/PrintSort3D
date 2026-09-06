@@ -7,6 +7,11 @@ const DB_PATH = process.env.DB_PATH ?? path.join(__dirname, '..', 'catalog.db');
 
 export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
+// Without this, any lock contention (a request write landing while runScan() is mid-write,
+// or a WAL checkpoint) fails immediately with SQLITE_BUSY instead of waiting. That surfaced
+// as intermittent "tags didn't save" under Docker, where SCAN_ON_STARTUP keeps a scan
+// running while the UI is already usable.
+db.exec('PRAGMA busy_timeout = 5000');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS roots (
