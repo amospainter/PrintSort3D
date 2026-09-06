@@ -64,6 +64,7 @@ export default function Library() {
   const tagsFilter = useMemo(() => parseTagsParam(searchParams.get('tags')), [searchParams]);
   const extFilter = searchParams.get('ext') ?? '';
   const rootFilter = searchParams.get('root') ?? '';
+  const folderFilter = searchParams.get('folder') ?? '';
   const duplicatesOnly = searchParams.get('dup') === '1';
   const sort = searchParams.get('sort') ?? 'added';
   const view = (searchParams.get('view') as ViewMode) || 'grid';
@@ -72,7 +73,12 @@ export default function Library() {
 
   // Sidebar-driven view title — mirrors which of the sidebar's "All models" / "Duplicates" /
   // source links produced the current URL, so the page heading stays in sync with it.
-  const pageTitle = duplicatesOnly ? 'Duplicates' : rootFilter || 'All models';
+  const folderSegments = folderFilter ? folderFilter.split('/') : [];
+  const pageTitle = duplicatesOnly
+    ? 'Duplicates'
+    : folderSegments.length > 0
+      ? folderSegments[folderSegments.length - 1]
+      : rootFilter || 'All models';
 
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [total, setTotal] = useState(0);
@@ -104,6 +110,7 @@ export default function Library() {
       .listFiles({
         query: query || undefined,
         root: rootFilter || undefined,
+        folder: folderFilter || undefined,
         tags: tagsFilter.length > 0 ? tagsFilter : undefined,
         ext: extFilter || undefined,
         duplicatesOnly: duplicatesOnly || undefined,
@@ -160,6 +167,28 @@ export default function Library() {
         <h1>{pageTitle}</h1>
         {!loading && <span className="page-heading-count">{total} model{total === 1 ? '' : 's'}</span>}
       </div>
+
+      {folderFilter && (
+        <div className="folder-breadcrumb">
+          <Link to={`/?root=${encodeURIComponent(rootFilter)}`}>{rootFilter || 'All models'}</Link>
+          {folderSegments.map((seg, i) => {
+            const partial = folderSegments.slice(0, i + 1).join('/');
+            const isLast = i === folderSegments.length - 1;
+            return (
+              <span key={partial}>
+                <span className="folder-breadcrumb-sep">/</span>
+                {isLast ? (
+                  <span>{seg}</span>
+                ) : (
+                  <Link to={`/?root=${encodeURIComponent(rootFilter)}&folder=${encodeURIComponent(partial)}`}>
+                    {seg}
+                  </Link>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       <div className="toolbar">
         <div className="search-input-wrap">

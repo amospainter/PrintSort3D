@@ -66,11 +66,12 @@ A single corrupt or unreadable file must not abort a scan of everything else. Th
 | File | Responsibility |
 |---|---|
 | `src/api.ts` | Typed fetch wrapper for every server endpoint. All server calls go through this file. |
+| `src/App.tsx` | App shell + sidebar: "All models" / "Duplicates" links, the **Sources** list (one row per watched root, each with a per-source rescan icon), and — under the currently-selected source — a **collapsible folder tree** built client-side from `GET /api/folders` (per-folder recursive counts as badges). Clicking a folder navigates to `/?root=<label>&folder=<path>`; ancestors of the active folder auto-expand. |
 | `src/loadModel.ts` | `loadModelAsObject3D(ext, arrayBuffer)` — picks the right three.js loader (`STLLoader` / `OBJLoader` / `ThreeMFLoader`) and returns an `Object3D`. `frameObject(object, camera)` — centers the object at the origin and positions/sizes the camera to frame it, based on its bounding box (for camera framing only — the *displayed* dimensions on the Detail page come from the server, not from re-deriving them here). Shared by the interactive viewer and the thumbnail generator. |
-| `src/ModelViewer.tsx` | Interactive `@react-three/fiber` viewer with `OrbitControls`, used on the Detail page. |
+| `src/ModelViewer.tsx` | Interactive `@react-three/fiber` viewer with `OrbitControls`, used on the Detail page. Loads the server-baked `meshUrl` by default; `preferRaw` (Detail's "Load full model" toggle) forces an in-browser parse of the raw source file instead. |
 | `src/ThumbnailGenerator.tsx` | Invisible, imperative (non-R3F) one-shot renderer: fetch raw file → parse → render offscreen → capture PNG → upload. See the architecture note above for why this isn't done through R3F. |
-| `src/pages/Library.tsx` | Grid/table toggle, search box, tag/extension filters, and pagination (page-size selector: 10/15/20/30/40/50, default 20 — passed to `GET /api/files` as `page`/`pageSize`; changing any filter or the page size resets to page 1). Mounts a `ThumbnailGenerator` for each file missing a thumbnail (a handful at a time), scoped to the current page. |
-| `src/pages/Detail.tsx` | Per-file view: `ModelViewer`, full absolute file path, model dimensions (`file.dimensions` straight from the API — computed once server-side at scan time, not re-parsed by the client), notes, tag editor, a read-only filament/layer-height panel for 3MF files with extracted metadata, and — for 3MF files with a non-empty `embeddedImages` list — a thumbnail gallery of every image embedded in the file. |
+| `src/pages/Library.tsx` | Grid/table toggle, search box, tag/extension/`root`/`folder` filters, and pagination (page-size selector: 10/15/20/30/40/50, default 20 — passed to `GET /api/files` as `page`/`pageSize`; changing any filter or the page size resets to page 1). All filter state lives in the URL. When a `folder` is active the heading shows the folder name plus a clickable breadcrumb back up to the root. Mounts a `ThumbnailGenerator` for each file missing a thumbnail (a handful at a time), scoped to the current page. |
+| `src/pages/Detail.tsx` | Per-file view: `ModelViewer`, a clickable folder-path breadcrumb (each segment links to that folder's filtered library view; absolute path on hover), model dimensions (`file.dimensions` straight from the API — computed once server-side at scan time, not re-parsed by the client), notes, tag editor, a read-only filament/layer-height panel for 3MF files with extracted metadata, and — for 3MF files with a non-empty `embeddedImages` list — a thumbnail gallery of every image embedded in the file. |
 | `src/pages/Settings.tsx` | CRUD for watched root folders (backed by `/api/roots`), a per-folder "Rescan" button (`POST /api/scan` with `{ root: label }`), and a "Rescan all" trigger (`POST /api/scan` with no body). The sidebar (`App.tsx`) mirrors this: a per-source rescan icon on each Sources row plus the all-sources rescan in the section header. |
 
 ## Data model
@@ -84,10 +85,14 @@ SQLite, four tables (defined in `server/src/db.ts`):
 
 `missing` exists so that a file temporarily unavailable (e.g. an external drive unplugged) doesn't lose its tags/notes/thumbnail — it just gets flagged and dimmed in the UI, and un-flagged automatically if it reappears on a later scan.
 
+There is **no folders table** — the sidebar folder tree is derived on the fly from the directory portion of every file's `relative_path` (`GET /api/folders`), and the `folder` filter on `GET /api/files` is a separator-normalized `LIKE '<folder>/%'` prefix match.
+
+> Some `files` columns added after this doc was first written aren't listed above — e.g. `content_hash` / `geometry_hash` (duplicate detection), `plates_json` / `plate_size_json` (multi-plate 3MFs), `filaments_json` (multi-material), `archive_entry_count` (`.zip`), and `mesh_path` (the server-baked render mesh). They follow the same guarded-`ALTER TABLE` + `scanner_version` backfill pattern; see `server/src/db.ts` and CLAUDE.md for the full current list.
+
 ## Request flow: adding a folder and scanning
 
 1. User adds a folder on the Settings page → `PUT /api/roots` writes `config.json` and upserts a `roots` row.
-2. User clicks "Rescan now" → `POST /api/scan` → `runScan()` walks every configured root recursively, filtering to `.stl`/`.3mf`/`.obj`.
+2. User clicks "Rescan now" → `POST /api/scan` → `runScan()` walks every configured root recursively, filtering to `.stl`/`.3mf`/`.obj`/`.zip`.
 3. For each file: if it's new, or its `mtime` changed, or its `scanner_version` is behind the code's current version (see below), (re)compute and store its bounding-box dimensions via `dimensions.ts` (all file types); for `.3mf` files also pull an embedded thumbnail + metadata via `threeMf.ts` and cache every embedded image as WebP via `assets.ts`.
 4. Any previously-known file not seen this pass gets `missing = 1`.
 5. Client reloads `GET /api/files`, renders the grid. Files still missing a `thumbnailUrl` (STL/OBJ, or a 3MF with no embedded thumbnail) each mount a `ThumbnailGenerator`, which renders and uploads a PNG, which is cached in `server/thumbnails/<id>.png` and referenced from then on.

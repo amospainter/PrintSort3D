@@ -215,6 +215,35 @@ describe('files pagination', () => {
   });
 });
 
+describe('folder routes', () => {
+  beforeAll(async () => {
+    const nested = path.join(filesDir, 'vehicles', 'cars');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(filesDir, 'vehicles', 'boat.stl'), 'solid x\nendsolid x\n');
+    fs.writeFileSync(path.join(nested, 'sedan.stl'), 'solid x\nendsolid x\n');
+    fs.writeFileSync(path.join(nested, 'coupe.stl'), 'solid x\nendsolid x\n');
+    await runScan();
+  });
+
+  it('lists every ancestor directory with a recursive file count', async () => {
+    const res = await request(app).get('/api/folders');
+    expect(res.status).toBe(200);
+    const byPath = Object.fromEntries(res.body.map((f: any) => [f.path, f]));
+    expect(byPath['vehicles'].fileCount).toBe(3);
+    expect(byPath['vehicles'].root).toBe('Test Root');
+    expect(byPath['vehicles/cars'].fileCount).toBe(2);
+    expect(byPath['vehicles/cars'].name).toBe('cars');
+  });
+
+  it('filters files to a folder and its descendants', async () => {
+    const nested = await request(app).get('/api/files?folder=vehicles/cars&sort=name');
+    expect(nested.body.items.map((f: any) => f.filename).sort()).toEqual(['coupe.stl', 'sedan.stl']);
+
+    const parent = await request(app).get('/api/files?folder=vehicles');
+    expect(parent.body.total).toBe(3);
+  });
+});
+
 describe('thumbnail routes', () => {
   it('accepts an uploaded thumbnail and serves it back', async () => {
     const fileId = (await request(app).get('/api/files')).body.items[0].id;

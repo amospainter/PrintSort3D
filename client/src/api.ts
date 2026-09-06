@@ -75,6 +75,13 @@ export interface RootConfig {
   path: string;
 }
 
+export interface FolderEntry {
+  root: string; // watched-folder label this directory lives under
+  path: string; // "/"-joined path relative to that root, e.g. "vehicles/cars"
+  name: string; // last path segment
+  fileCount: number; // files at or below this directory (recursive)
+}
+
 export interface ScanResult {
   added: number;
   updated: number;
@@ -106,6 +113,7 @@ export const api = {
     params: {
       query?: string;
       root?: string;
+      folder?: string;
       tags?: string[];
       ext?: string;
       sort?: string;
@@ -160,6 +168,9 @@ export const api = {
   },
   getRoots() {
     return request<RootConfig[]>('/api/roots');
+  },
+  listFolders() {
+    return request<FolderEntry[]>('/api/folders');
   },
   setRoots(roots: RootConfig[]) {
     return request<RootConfig[]>('/api/roots', {

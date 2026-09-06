@@ -52,6 +52,7 @@ Query params (all optional):
 |---|---|
 | `query` | Substring match against `filename` (case-insensitive `LIKE %query%`) |
 | `root` | Only files under the root folder with this exact `label` (see `GET /api/roots`) |
+| `folder` | Only files at or below this directory, relative to the root (`/`-joined, e.g. `vehicles/cars`). Recursive; separator-normalized so it works regardless of how `relative_path` was stored. Usually combined with `root`. |
 | `tags` | Comma-separated tag names; a file must carry **every** listed tag (AND, not OR) |
 | `ext` | Only files with this extension (`.stl`, `.3mf`, `.obj`, `.zip` — leading dot optional) |
 | `duplicatesOnly` | `1` or `true` — only files that share a `content_hash` or `geometry_hash` with another file |
@@ -131,6 +132,16 @@ Async and can take a while on a large library — for each new or changed `.3mf`
 Forces one file through the same scan-time processing as `POST /api/scan` (dimensions, 3MF metadata/plates, archive entry count, content/geometry hashing), regardless of whether its `mtime` or `scanner_version` would normally trigger reprocessing. No body. Meant for quick manual re-testing of a single file rather than waiting on a full library scan.
 
 Returns the file's full record (same shape as `GET /api/files/:id`, including `duplicates`) plus `rescanStatus: 'ok' | 'missing'` — `'missing'` means the file wasn't found on disk (it's flagged `missing` in the response and no further processing ran). `404` if the id doesn't exist.
+
+## `GET /api/folders`
+
+Returns the directory tree derived from every file's `relative_path` (there is no folders table). Every ancestor directory of every file is included — intermediate directories with no direct files still appear — each with a **recursive** file count:
+
+```ts
+{ root: string, path: string, name: string, fileCount: number }[]
+```
+
+`root` is the watched-folder label; `path` is `/`-joined relative to that root; `name` is the last segment. Sorted by `root` then `path`. Powers the sidebar folder tree; pair a row's `root`/`path` with the `folder` param on `GET /api/files`.
 
 ## `GET /api/roots`
 

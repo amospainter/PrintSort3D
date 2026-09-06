@@ -13,6 +13,30 @@ function fullFilePath(file: FileEntry): string {
   return `${root}/${rel}`;
 }
 
+// Directory portion of the file's path, rendered as links into the filtered library view
+// (root, then each folder segment); the filename is shown plain as the last crumb.
+function PathBreadcrumb({ file }: { file: FileEntry }) {
+  const rootLabel = file.root.label ?? '';
+  const parts = file.relativePath.split(/[\\/]/).filter(Boolean);
+  const filename = parts.pop() ?? file.filename;
+  return (
+    <span className="path-breadcrumb" title={fullFilePath(file)}>
+      <Link to={`/?root=${encodeURIComponent(rootLabel)}`}>{rootLabel}</Link>
+      {parts.map((seg, i) => {
+        const partial = parts.slice(0, i + 1).join('/');
+        return (
+          <span key={partial}>
+            <span className="path-breadcrumb-sep">/</span>
+            <Link to={`/?root=${encodeURIComponent(rootLabel)}&folder=${encodeURIComponent(partial)}`}>{seg}</Link>
+          </span>
+        );
+      })}
+      <span className="path-breadcrumb-sep">/</span>
+      <span>{filename}</span>
+    </span>
+  );
+}
+
 function formatDimensions(size: { x: number; y: number; z: number }): string {
   const fmt = (n: number) => n.toFixed(1);
   return `${fmt(size.x)} × ${fmt(size.y)} × ${fmt(size.z)} mm`;
@@ -103,6 +127,10 @@ export default function Detail() {
   const [rescanning, setRescanning] = useState(false);
   const [rescanMessage, setRescanMessage] = useState<string | null>(null);
   const [painted, setPainted] = useState(false);
+  // "Load full model": swap the fast server-baked mesh for the raw source file parsed
+  // in-browser (three.js's own STL/OBJ/3MF loaders) — an escape hatch for when the bake
+  // looks wrong. Reset whenever the viewed file changes.
+  const [loadFull, setLoadFull] = useState(false);
 
   useEffect(() => {
     api.getFile(fileId).then((f) => {
@@ -110,6 +138,8 @@ export default function Detail() {
       setNotes(f.notes);
       setTagDraft(f.tags);
       setActivePlateIndex(null); // "All plates" by default — matches the pre-plate-switcher 3D view
+      setLoadFull(false);
+      setArrayBuffer(null);
     });
     api.listTags().then(setAllTags);
   }, [fileId]);
@@ -130,14 +160,17 @@ export default function Detail() {
   };
 
   // Archive files are browsed entry-by-entry (ArchiveViewer fetches its own bytes). Baked
-  // files load their mesh inside ModelViewer. The whole-file raw fetch here is only the
-  // fallback for a non-archive file with no baked mesh yet (pre-v8 scan, or bake failed).
+  // files load their mesh inside ModelViewer. The whole-file raw fetch here is the fallback
+  // for a non-archive file with no baked mesh yet (pre-v8 scan, or bake failed), and the
+  // source for the "Load full model" toggle when a baked mesh does exist.
   useEffect(() => {
-    if (!file || file.ext === '.zip' || file.meshUrl) return;
+    if (!file || file.ext === '.zip') return;
+    if (file.meshUrl && !loadFull) return;
+    if (arrayBuffer) return;
     fetch(api.rawFileUrl(fileId))
       .then((res) => (res.ok ? res.arrayBuffer() : null))
       .then(setArrayBuffer);
-  }, [fileId, file]);
+  }, [fileId, file, loadFull, arrayBuffer]);
 
   const activePlate = useMemo(
     () => (activePlateIndex === null ? null : file?.plates.find((p) => p.index === activePlateIndex) ?? null),
@@ -196,20 +229,36 @@ export default function Detail() {
                     ext={file.ext}
                     arrayBuffer={arrayBuffer}
                     meshUrl={file.meshUrl}
+                    preferRaw={loadFull}
                     visibleChildIndices={visibleChildIndices}
                     plates={file.plates}
                     bedSize={file.bedSize}
                     filamentColors={file.filaments.map((f) => f.color)}
-                    painted={painted}
+                    painted={painted && !loadFull}
                   />
                   <div className="viewer-hint">
                     <span>Drag to rotate &middot; Right-drag to pan &middot; Scroll to zoom</span>
-                    {file.meshUrl && file.filaments.length > 1 && (
+                    {file.meshUrl && file.filaments.length > 1 && !loadFull && (
                       <label className="viewer-paint-toggle">
                         <input type="checkbox" checked={painted} onChange={(e) => setPainted(e.target.checked)} />
                         Show painted colors
                       </label>
                     )}
+                    {file.meshUrl &&
+                      (loadFull ? (
+                        <span className="viewer-fullmodel-status">
+                          {arrayBuffer ? 'Full model (parsed in browser)' : 'Loading full model…'}
+                          {arrayBuffer && (
+                            <button type="button" className="linklike" onClick={() => setLoadFull(false)}>
+                              use fast mesh
+                            </button>
+                          )}
+                        </span>
+                      ) : (
+                        <button type="button" className="linklike" onClick={() => setLoadFull(true)}>
+                          Load full model
+                        </button>
+                      ))}
                   </div>
                 </>
               ) : (
@@ -270,11 +319,13 @@ export default function Detail() {
             </div>
             <div className="details-row">
               <span className="muted">Library</span>
-              <span>{file.root.label}</span>
+              <span>
+                <Link to={`/?root=${encodeURIComponent(file.root.label ?? '')}`}>{file.root.label}</Link>
+              </span>
             </div>
-            <div className="details-row">
+            <div className="details-row details-row-path">
               <span className="muted">Path</span>
-              <span className="full-path" title={fullFilePath(file)}>{file.relativePath}</span>
+              <PathBreadcrumb file={file} />
             </div>
             <div className="details-row">
               <span className="muted">Modified</span>

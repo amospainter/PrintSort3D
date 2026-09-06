@@ -40,6 +40,7 @@ function Model({
   ext,
   arrayBuffer,
   meshUrl,
+  preferRaw,
   onFramed,
   onBeds,
   visibleChildIndices,
@@ -51,6 +52,7 @@ function Model({
   ext: string;
   arrayBuffer?: ArrayBuffer | null;
   meshUrl?: string | null;
+  preferRaw?: boolean;
   onFramed?: () => void;
   onBeds?: (beds: PlateBed[]) => void;
   visibleChildIndices?: number[] | null;
@@ -63,22 +65,26 @@ function Model({
   const { camera } = useThree();
 
   // Prefer the server-baked mesh (fast: no unzip / DOM parse); fall back to parsing the raw
-  // file bytes in-browser for archive entries and files not yet baked.
+  // file bytes in-browser for archive entries and files not yet baked. `preferRaw` forces the
+  // in-browser parse even when a baked mesh exists — the Detail page's "Load full model"
+  // escape hatch for when the bake looks wrong.
   useEffect(() => {
     let cancelled = false;
-    const load = meshUrl
-      ? fetch(meshUrl)
-          .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(`mesh ${res.status}`))))
-          .then((buf) => loadBakedMesh(buf) as THREE.Object3D)
-      : arrayBuffer
-        ? loadModelAsObject3D(ext, arrayBuffer)
+    const useRaw = (!meshUrl || preferRaw) && arrayBuffer;
+    const load = useRaw
+      ? loadModelAsObject3D(ext, arrayBuffer)
+      : meshUrl
+        ? fetch(meshUrl)
+            .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(`mesh ${res.status}`))))
+            .then((buf) => loadBakedMesh(buf) as THREE.Object3D)
         : null;
     if (!load) return;
+    setObject(null);
     load.then((obj) => !cancelled && setObject(obj)).catch(() => !cancelled && setObject(null));
     return () => {
       cancelled = true;
     };
-  }, [ext, arrayBuffer, meshUrl]);
+  }, [ext, arrayBuffer, meshUrl, preferRaw]);
 
   // Toggle painted vertex colours on the loaded meshes in place. Independent of the framing
   // effect below — geometry swaps don't change the bounding box, and plate visibility toggling
@@ -268,6 +274,9 @@ interface ModelViewerProps {
   arrayBuffer?: ArrayBuffer | null;
   // Server-baked "PSM1" mesh URL (file.meshUrl); preferred over `arrayBuffer` when present.
   meshUrl?: string | null;
+  // Force parsing `arrayBuffer` in-browser even when `meshUrl` is set (Detail's "Load full
+  // model" toggle). No-op unless `arrayBuffer` has been fetched.
+  preferRaw?: boolean;
   interactive?: boolean;
   onFramed?: () => void;
   // Which top-level build items (Group.children, in 3MF build order) to show — used to view
@@ -291,6 +300,7 @@ export function ModelViewer({
   ext,
   arrayBuffer,
   meshUrl,
+  preferRaw,
   interactive = true,
   onFramed,
   visibleChildIndices,
@@ -314,6 +324,7 @@ export function ModelViewer({
         ext={ext}
         arrayBuffer={arrayBuffer}
         meshUrl={meshUrl}
+        preferRaw={preferRaw}
         onFramed={onFramed}
         onBeds={setBeds}
         visibleChildIndices={visibleChildIndices}

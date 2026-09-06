@@ -157,13 +157,26 @@ const DEFAULT_PAGE_SIZE = 60;
 const MAX_PAGE_SIZE = 200;
 
 router.get('/files', (req, res) => {
-  const { query, tags, ext, sort, duplicatesOnly, root } = req.query as Record<string, string | undefined>;
+  const { query, tags, ext, sort, duplicatesOnly, root, folder } = req.query as Record<
+    string,
+    string | undefined
+  >;
   const clauses: string[] = [];
   const params: unknown[] = [];
 
   if (query) {
     clauses.push('f.filename LIKE ?');
     params.push(`%${query}%`);
+  }
+  if (folder) {
+    // Recursive: everything at or below this directory. `relative_path` always ends in the
+    // filename, so a `<folder>/%` prefix match on the separator-normalized path is enough —
+    // no separate equality case. `\`, `%`, `_` in a folder name are escaped so they're
+    // matched literally rather than acting as LIKE wildcards / the escape char itself.
+    const norm = folder.replace(/\\/g, '/').replace(/\/+$/, '');
+    const escaped = norm.replace(/[\\%_]/g, (c) => `\\${c}`);
+    clauses.push("REPLACE(f.relative_path, '\\', '/') LIKE ? ESCAPE '\\'");
+    params.push(`${escaped}/%`);
   }
   if (root) {
     // Matches by label (what the sidebar's "Sources" list shows/links with), not path —
@@ -361,6 +374,45 @@ router.post('/files/:id/rescan', async (req, res) => {
     console.error(`Rescan failed for file ${id}:`, err);
     res.status(500).json({ error: 'rescan failed', message: err instanceof Error ? err.message : String(err) });
   }
+});
+
+interface FolderEntry {
+  root: string; // watched-folder label the directory lives under
+  path: string; // "/"-joined path relative to that root, e.g. "vehicles/cars"
+  name: string; // last path segment
+  fileCount: number; // files at or below this directory (recursive)
+}
+
+// Directory tree derived purely from `files.relative_path` — there's no folders table.
+// Every ancestor directory of every file is emitted (so intermediate dirs with no direct
+// files still appear), each with a recursive file count. Powers the sidebar folder tree.
+router.get('/folders', (_req, res) => {
+  const rows = db
+    .prepare(
+      `SELECT r.label as root_label, f.relative_path as relative_path
+       FROM files f JOIN roots r ON r.id = f.root_id`
+    )
+    .all() as { root_label: string; relative_path: string }[];
+
+  const counts = new Map<string, FolderEntry>();
+  for (const { root_label, relative_path } of rows) {
+    const parts = relative_path.split(/[\\/]/);
+    parts.pop(); // drop the filename
+    let acc = '';
+    for (const part of parts) {
+      if (!part) continue;
+      acc = acc ? `${acc}/${part}` : part;
+      const key = JSON.stringify([root_label, acc]);
+      const entry = counts.get(key) ?? { root: root_label, path: acc, name: part, fileCount: 0 };
+      entry.fileCount++;
+      counts.set(key, entry);
+    }
+  }
+
+  const folders = [...counts.values()].sort(
+    (a, b) => a.root.localeCompare(b.root) || a.path.localeCompare(b.path)
+  );
+  res.json(folders);
 });
 
 router.get('/roots', (_req, res) => {
