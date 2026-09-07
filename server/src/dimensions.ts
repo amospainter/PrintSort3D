@@ -45,3 +45,21 @@ export function computeDimensions(filePath: string, ext: string): Dimensions | n
   if (!found) return null;
   return box.toDimensions();
 }
+
+/**
+ * Dimensions straight from already-baked mesh parts (positions are a flat Float32Array of
+ * world-space x/y/z triples). Used by the scanner so a file isn't re-parsed just to get its
+ * bounding box — `meshBake.ts` already walked every vertex. For a 3MF this is the *built*
+ * geometry with transforms applied (vs. computeDimensions' raw local-vertex union), which
+ * also fixes the inflated-box caveat for multi-component assemblies.
+ */
+export function dimensionsFromParts(
+  parts: { positions: Float32Array }[]
+): Dimensions | null {
+  const box = new BoundingBoxAccumulator();
+  for (const part of parts) {
+    const p = part.positions;
+    for (let i = 0; i + 2 < p.length; i += 3) box.add(p[i], p[i + 1], p[i + 2]);
+  }
+  return box.toDimensions();
+}

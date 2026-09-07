@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { computeContentHash, computeGeometryHash } from './fingerprint';
+import { computeContentHash, computeGeometryHash, computeGeometryHashFromParts } from './fingerprint';
 
 const tmpFiles: string[] = [];
 afterEach(() => {
@@ -140,6 +140,27 @@ describe('computeGeometryHash', () => {
       'v 0 5 0\nv 0 0 0\nv 10 0 0\nvn 0 0 1\nf 2//1 3//1 1//1\n'
     );
     expect(computeGeometryHash(obj, '.obj')).toBe(computeGeometryHash(stl, '.stl'));
+  });
+
+  it('computeGeometryHashFromParts matches computeGeometryHash for the same vertices', () => {
+    const verts: [number, number, number][] = [
+      [0, 0, 0],
+      [10, 0, 0],
+      [0, 5, 0],
+      [3, 3, 7],
+    ];
+    const stl = writeTmp('parts.stl', asciiStlWithVertices(verts));
+    // One non-indexed part, positions in the same order the STL walker emits them.
+    const positions = new Float32Array(verts.flat());
+    expect(computeGeometryHashFromParts([{ positions }])).toBe(computeGeometryHash(stl, '.stl'));
+  });
+
+  it('computeGeometryHashFromParts is order/translation invariant and returns null for empty parts', () => {
+    const a = new Float32Array([0, 0, 0, 10, 0, 0, 0, 5, 0]);
+    const b = new Float32Array([100, 105, 100, 100, 100, 100, 110, 100, 100]); // reordered + translated
+    expect(computeGeometryHashFromParts([{ positions: b }])).toBe(computeGeometryHashFromParts([{ positions: a }]));
+    expect(computeGeometryHashFromParts([{ positions: new Float32Array(0) }])).toBeNull();
+    expect(computeGeometryHashFromParts([])).toBeNull();
   });
 
   it('binary and ASCII STL of the same triangle hash identically', () => {

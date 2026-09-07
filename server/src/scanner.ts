@@ -5,8 +5,8 @@ import { loadConfig } from './config';
 import { extractThreeMfData, groupImagesByPlate, computePlateInfo } from './threeMf';
 import { extractSliceInfo } from './sliceInfo';
 import { cacheThreeMfImages, cacheBakedMeshParts, saveThumbnail } from './assets';
-import { computeDimensions } from './dimensions';
-import { computeContentHash, computeGeometryHash } from './fingerprint';
+import { computeDimensions, dimensionsFromParts } from './dimensions';
+import { computeContentHash, computeGeometryHash, computeGeometryHashFromParts } from './fingerprint';
 import { listArchiveModelEntries } from './archive';
 import { bakeModel, type BakedPart } from './meshBake';
 import { renderBakedThumbnail } from './thumbnail';
@@ -21,7 +21,7 @@ const SUPPORTED_EXTS = new Set(['.stl', '.3mf', '.obj', '.zip']);
 // disk. Legitimately-empty results (a file with no parseable geometry) still stop being
 // reprocessed once caught up, unlike inferring "needs backfill" from a nullable column, which
 // would retry forever for such files.
-const CURRENT_SCANNER_VERSION = 11;
+const CURRENT_SCANNER_VERSION = 12;
 
 function walk(dir: string, fileList: string[] = [], seen: Set<string> = new Set()): string[] {
   // A symlink loop (or two symlinks pointing at a shared ancestor) would recurse forever —
@@ -81,8 +81,15 @@ export interface ScanResult {
   missing: number;
 }
 
-function applyDimensions(fileId: number, fullPath: string, ext: string): void {
-  const dims = computeDimensions(fullPath, ext);
+function applyDimensions(
+  fileId: number,
+  fullPath: string,
+  ext: string,
+  bakedParts: BakedPart[] | null
+): void {
+  // Prefer the mesh we already baked — no second parse of the file. Fall back to a direct
+  // parse for archives and anything the bake couldn't handle.
+  const dims = bakedParts ? dimensionsFromParts(bakedParts) : computeDimensions(fullPath, ext);
   db.prepare('UPDATE files SET dimension_x = ?, dimension_y = ?, dimension_z = ? WHERE id = ?').run(
     dims?.x ?? null,
     dims?.y ?? null,
@@ -163,9 +170,18 @@ function applyArchiveMetadata(fileId: number, fullPath: string): void {
   db.prepare('UPDATE files SET archive_entry_count = ? WHERE id = ?').run(entries.length, fileId);
 }
 
-async function applyFingerprint(fileId: number, fullPath: string, ext: string): Promise<void> {
+async function applyFingerprint(
+  fileId: number,
+  fullPath: string,
+  ext: string,
+  bakedParts: BakedPart[] | null
+): Promise<void> {
+  // content_hash must be the raw file bytes (that's the point of it) — a cheap streamed read.
   const contentHash = await computeContentHash(fullPath);
-  const geometryHash = computeGeometryHash(fullPath, ext);
+  // geometry_hash can come from the mesh we already baked, saving two more full parses.
+  const geometryHash = bakedParts
+    ? computeGeometryHashFromParts(bakedParts)
+    : computeGeometryHash(fullPath, ext);
   db.prepare('UPDATE files SET content_hash = ?, geometry_hash = ? WHERE id = ?').run(
     contentHash,
     geometryHash,
@@ -174,11 +190,13 @@ async function applyFingerprint(fileId: number, fullPath: string, ext: string): 
 }
 
 async function processFile(fileId: number, fullPath: string, ext: string): Promise<void> {
-  applyDimensions(fileId, fullPath, ext);
+  // Bake first: dimensions and the geometry hash are both derived from these parts rather
+  // than re-parsing the file (a 3MF was previously unzipped and XML-walked ~4× per scan).
   let bakedParts: BakedPart[] | null = null;
   if (ext === '.stl' || ext === '.obj' || ext === '.3mf') {
     bakedParts = applyBakedMesh(fileId, fullPath, ext);
   }
+  applyDimensions(fileId, fullPath, ext, bakedParts);
   let hasEmbeddedThumbnail = false;
   if (ext === '.3mf') {
     hasEmbeddedThumbnail = await apply3mfMetadata(fileId, fullPath);
@@ -189,7 +207,7 @@ async function processFile(fileId: number, fullPath: string, ext: string): Promi
   if (bakedParts && !hasEmbeddedThumbnail) {
     await applyRenderedThumbnail(fileId, bakedParts);
   }
-  await applyFingerprint(fileId, fullPath, ext);
+  await applyFingerprint(fileId, fullPath, ext, bakedParts);
   db.prepare('UPDATE files SET scanner_version = ? WHERE id = ?').run(CURRENT_SCANNER_VERSION, fileId);
 }
 

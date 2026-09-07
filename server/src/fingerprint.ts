@@ -39,12 +39,17 @@ function round(n: number): number {
  * out of memory". The sort operates on numeric indices over typed-array storage, and the
  * hash is streamed per sorted vertex instead of joining one giant string.
  */
-export function computeGeometryHash(filePath: string, ext: string): string | null {
+// A vertex source: invokes `cb` once per vertex, returns whether any were seen. Both a file
+// (via forEachVertex) and already-baked mesh parts can supply one, so the fingerprint logic
+// below stays in one place.
+type VertexWalk = (cb: (x: number, y: number, z: number) => void) => boolean;
+
+function fingerprintVertices(walk: VertexWalk): string | null {
   let count = 0;
   let minX = Infinity;
   let minY = Infinity;
   let minZ = Infinity;
-  const foundPass1 = forEachVertex(filePath, ext, (x, y, z) => {
+  const foundPass1 = walk((x, y, z) => {
     count++;
     if (x < minX) minX = x;
     if (y < minY) minY = y;
@@ -54,7 +59,7 @@ export function computeGeometryHash(filePath: string, ext: string): string | nul
 
   const coords = new Float64Array(count * 3);
   let i = 0;
-  forEachVertex(filePath, ext, (x, y, z) => {
+  walk((x, y, z) => {
     coords[i * 3] = round(x - minX);
     coords[i * 3 + 1] = round(y - minY);
     coords[i * 3 + 2] = round(z - minZ);
@@ -78,4 +83,30 @@ export function computeGeometryHash(filePath: string, ext: string): string | nul
     hash.update(`${coords[idx * 3]},${coords[idx * 3 + 1]},${coords[idx * 3 + 2]}`);
   }
   return hash.digest('hex');
+}
+
+export function computeGeometryHash(filePath: string, ext: string): string | null {
+  return fingerprintVertices((cb) => forEachVertex(filePath, ext, cb));
+}
+
+/**
+ * Same fingerprint, fed from already-baked mesh parts so a file the scanner just baked isn't
+ * re-read twice more. For STL/OBJ the baked positions are the file's own vertices verbatim,
+ * so the hash is byte-identical to computeGeometryHash. For a 3MF the baked positions are the
+ * *built* geometry with transforms applied (vs. the raw local-vertex union); the bbox-min
+ * normalisation keeps translation-only placements matching, and rotation/scale was never
+ * covered by this hash anyway.
+ */
+export function computeGeometryHashFromParts(parts: { positions: Float32Array }[]): string | null {
+  return fingerprintVertices((cb) => {
+    let any = false;
+    for (const part of parts) {
+      const p = part.positions;
+      for (let i = 0; i + 2 < p.length; i += 3) {
+        cb(p[i], p[i + 1], p[i + 2]);
+        any = true;
+      }
+    }
+    return any;
+  });
 }

@@ -49,7 +49,7 @@ function withCorruptedEntry<T>(entryName: string, run: () => T): T {
 
 // Vitest hoists vi.mock() calls above all imports in the file, so a normal static
 // import here still resolves to the mocked adm-zip.
-import { computeDimensions } from './dimensions';
+import { computeDimensions, dimensionsFromParts } from './dimensions';
 
 const tmpFiles: string[] = [];
 afterEach(() => {
@@ -303,5 +303,20 @@ describe('computeDimensions - misc', () => {
 
   it('returns null for a nonexistent file instead of throwing', () => {
     expect(computeDimensions('/nonexistent/path/model.stl', '.stl')).toBeNull();
+  });
+});
+
+describe('dimensionsFromParts', () => {
+  it('computes the bounding box across every part', () => {
+    const dims = dimensionsFromParts([
+      { positions: new Float32Array([0, 0, 0, 10, 2, 0, 0, 0, 3]) },
+      { positions: new Float32Array([-5, 0, 0, 0, 20, 0, 0, 0, 8]) },
+    ]);
+    expect(dims).toEqual({ x: 15, y: 20, z: 8 });
+  });
+
+  it('returns null for empty parts', () => {
+    expect(dimensionsFromParts([])).toBeNull();
+    expect(dimensionsFromParts([{ positions: new Float32Array(0) }])).toBeNull();
   });
 });
