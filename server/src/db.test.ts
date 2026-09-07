@@ -46,6 +46,8 @@ const MIGRATED_COLUMNS = [
   'plate_size_json',
   'filaments_json',
   'mesh_path',
+  'slice_info_json',
+  'duplicate_count',
 ];
 
 beforeAll(async () => {
@@ -107,6 +109,7 @@ describe('db.ts migrations on a pre-existing old-schema catalog.db', () => {
     expect(row.notes).toBe('keep me');
     expect(row.scanner_version).toBe(0); // NOT NULL DEFAULT 0 backfilled onto the existing row
     expect(row.mesh_path).toBeNull();
+    expect(row.duplicate_count).toBe(0); // materialized column, backfilled on the migration
   });
 
   it('adds tags.color to the pre-existing tags table', () => {
@@ -133,7 +136,14 @@ describe('db.ts migrations on a pre-existing old-schema catalog.db', () => {
     const indexes = (
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]
     ).map((r) => r.name);
-    expect(indexes).toEqual(expect.arrayContaining(['idx_files_content_hash', 'idx_files_geometry_hash']));
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        'idx_files_content_hash',
+        'idx_files_geometry_hash',
+        'idx_files_added_at',
+        'idx_files_duplicate_count',
+      ])
+    );
   });
 
   it('is a no-op on the second import (columns already present)', async () => {

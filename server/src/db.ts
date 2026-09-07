@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS files (
   plate_size_json TEXT,
   mesh_path TEXT,
   slice_info_json TEXT,
+  duplicate_count INTEGER NOT NULL DEFAULT 0,
   UNIQUE(root_id, relative_path)
 );
 
@@ -92,13 +93,31 @@ const migrations: [string, string][] = [
   ['filaments_json', 'ALTER TABLE files ADD COLUMN filaments_json TEXT'],
   ['mesh_path', 'ALTER TABLE files ADD COLUMN mesh_path TEXT'],
   ['slice_info_json', 'ALTER TABLE files ADD COLUMN slice_info_json TEXT'],
+  ['duplicate_count', 'ALTER TABLE files ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 0'],
 ];
 
+let addedDuplicateCount = false;
 for (const [column, sql] of migrations) {
   if (!columnNames.has(column)) {
     db.exec(sql);
+    if (column === 'duplicate_count') addedDuplicateCount = true;
   }
 }
+
+// `files.duplicate_count` is a materialized version of the per-row correlated subquery the
+// list endpoint used to run (a full `files` scan for every row returned). It's recomputed at
+// the end of every scan and on delete/purge (see RECOMPUTE_DUPLICATE_COUNTS_SQL); backfill it
+// once here so an upgraded DB is correct before its first rescan.
+export const RECOMPUTE_DUPLICATE_COUNTS_SQL = `
+  UPDATE files SET duplicate_count = (
+    SELECT COUNT(*) FROM files f2
+    WHERE f2.id != files.id AND (
+      (files.content_hash IS NOT NULL AND f2.content_hash = files.content_hash) OR
+      (files.geometry_hash IS NOT NULL AND f2.geometry_hash = files.geometry_hash)
+    )
+  )
+`;
+if (addedDuplicateCount) db.exec(RECOMPUTE_DUPLICATE_COUNTS_SQL);
 
 // Same guarded-ALTER pattern for the `tags` table (the loop above only covers `files`).
 const tagColumns = new Set(
@@ -143,4 +162,5 @@ CREATE INDEX IF NOT EXISTS idx_files_size_bytes ON files(size_bytes);
 CREATE INDEX IF NOT EXISTS idx_files_filename ON files(filename);
 CREATE INDEX IF NOT EXISTS idx_files_root_id ON files(root_id);
 CREATE INDEX IF NOT EXISTS idx_files_ext ON files(ext);
+CREATE INDEX IF NOT EXISTS idx_files_duplicate_count ON files(duplicate_count);
 `);

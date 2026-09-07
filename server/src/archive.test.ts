@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import AdmZip from 'adm-zip';
-import { listArchiveModelEntries, readArchiveEntry } from './archive';
+import { listArchiveModelEntries, readArchiveEntry, readArchiveModelEntry } from './archive';
 
 const tmpFiles: string[] = [];
 afterEach(() => {
@@ -71,5 +71,30 @@ describe('readArchiveEntry', () => {
     tmpFiles.push(filePath);
 
     expect(readArchiveEntry(filePath, 'anything')).toBeNull();
+  });
+});
+
+describe('readArchiveModelEntry', () => {
+  it('reads a model entry in one archive open', () => {
+    const content = Buffer.from('stl payload');
+    const file = writeFixtureZip([
+      { name: 'Models/widget.stl', content },
+      { name: 'readme.txt', content: 'ignored' },
+    ]);
+    expect(readArchiveModelEntry(file, 'Models/widget.stl')).toEqual(content);
+  });
+
+  it('returns null for a non-model entry, a missing entry, and a corrupt zip', () => {
+    const file = writeFixtureZip([
+      { name: 'Models/widget.stl', content: 'x' },
+      { name: 'notes.txt', content: 'y' },
+    ]);
+    expect(readArchiveModelEntry(file, 'notes.txt')).toBeNull();
+    expect(readArchiveModelEntry(file, 'Models/nope.stl')).toBeNull();
+
+    const bad = path.join(os.tmpdir(), `corrupt-model-entry-${Date.now()}.zip`);
+    fs.writeFileSync(bad, 'not a zip');
+    tmpFiles.push(bad);
+    expect(readArchiveModelEntry(bad, 'anything')).toBeNull();
   });
 });

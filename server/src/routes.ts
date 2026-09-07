@@ -3,10 +3,10 @@ import fs from 'fs';
 import path from 'path';
 import { db } from './db';
 import { loadConfig, saveConfig, RootConfig, PlateSize } from './config';
-import { runScan, rescanFile, isScanning } from './scanner';
+import { runScan, rescanFile, isScanning, recomputeDuplicateCounts } from './scanner';
 import { ASSETS_DIR } from './paths';
 import { deleteCachedImages, thumbnailFilePath, BAKED_MESH_FILENAME } from './assets';
-import { listArchiveModelEntries, readArchiveEntry } from './archive';
+import { listArchiveModelEntries, readArchiveModelEntry } from './archive';
 
 export const router = Router();
 
@@ -41,7 +41,7 @@ interface FileRow {
   root_label?: string;
   root_path?: string;
   tags?: string;
-  duplicate_count?: number;
+  duplicate_count: number;
 }
 
 interface DuplicateRow {
@@ -150,20 +150,16 @@ function serialize(row: FileRow) {
   return serializeFile(row, loadConfig().defaultPlateSize);
 }
 
-const DUPLICATE_MATCH_SQL = `
-  (f.content_hash IS NOT NULL AND f2.content_hash = f.content_hash) OR
-  (f.geometry_hash IS NOT NULL AND f2.geometry_hash = f.geometry_hash)
-`;
-
-const TAGS_AND_DUPES = `
-    (SELECT GROUP_CONCAT(t.name, '||') FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id) as tags,
-    (SELECT COUNT(*) FROM files f2 WHERE f2.id != f.id AND (${DUPLICATE_MATCH_SQL})) as duplicate_count
+// `f.duplicate_count` is a materialized column (recomputed at scan end + on delete) — it
+// replaced a per-row correlated `COUNT(*)` subquery over the whole `files` table.
+const TAGS_COL = `
+    (SELECT GROUP_CONCAT(t.name, '||') FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id) as tags
 `;
 
 // Detail / single-file responses: every column, including the big slicer_metadata_json blob.
 const BASE_QUERY = `
   SELECT f.*, r.label as root_label, r.path as root_path,
-${TAGS_AND_DUPES}
+${TAGS_COL}
   FROM files f JOIN roots r ON r.id = f.root_id
 `;
 
@@ -175,9 +171,9 @@ const LIST_QUERY = `
     f.notes, f.thumbnail_path, f.missing, f.filament_type, f.filament_color, f.filaments_json,
     f.layer_height, f.embedded_images_json, f.dimension_x, f.dimension_y, f.dimension_z,
     f.content_hash, f.geometry_hash, f.archive_entry_count, f.plates_json, f.plate_size_json,
-    f.mesh_path, f.slice_info_json,
+    f.mesh_path, f.slice_info_json, f.duplicate_count,
     r.label as root_label, r.path as root_path,
-${TAGS_AND_DUPES}
+${TAGS_COL}
   FROM files f JOIN roots r ON r.id = f.root_id
 `;
 
@@ -229,7 +225,7 @@ router.get('/files', (req, res) => {
     }
   }
   if (duplicatesOnly === '1' || duplicatesOnly === 'true') {
-    clauses.push(`EXISTS (SELECT 1 FROM files f2 WHERE f2.id != f.id AND (${DUPLICATE_MATCH_SQL}))`);
+    clauses.push('f.duplicate_count > 0');
   }
   if (missingOnly === '1' || missingOnly === 'true') {
     clauses.push('f.missing = 1');
@@ -326,6 +322,7 @@ router.post('/files/purge-missing', (req, res) => {
   // already gone from the DB with a leftover asset dir is harmless (the startup prune and
   // the next purge both mop it up).
   for (const { id } of rows) deleteCachedImages(id);
+  if (rows.length > 0) recomputeDuplicateCounts(); // removed files may have been someone's duplicate
 
   res.json({ removed: rows.length });
 });
@@ -355,6 +352,7 @@ router.delete('/files/:id', (req, res) => {
     return res.status(500).json({ error: 'delete failed', message: err instanceof Error ? err.message : String(err) });
   }
   deleteCachedImages(id);
+  recomputeDuplicateCounts();
   res.json({ ok: true });
 });
 
@@ -780,13 +778,10 @@ router.get('/files/:id/archive-raw', (req, res) => {
   const entryPath = req.query.path as string | undefined;
   if (!entryPath) return res.status(400).json({ error: 'path required' });
 
-  // Re-derive the valid entry list rather than trusting the query param outright — it's
-  // just a zip entry name (not a filesystem path), but this keeps the same "only what we
-  // already enumerated" guarantee the rest of this app applies to trusted-but-unvalidated data.
-  const entries = listArchiveModelEntries(resolved.fullPath);
-  if (!entries.some((e) => e.path === entryPath)) return res.status(404).json({ error: 'entry not found' });
-
-  const buffer = readArchiveEntry(resolved.fullPath, entryPath);
+  // One archive open: readArchiveModelEntry both validates the entry is a model file we'd
+  // have enumerated and returns its bytes. (Previously this listed every entry and then
+  // re-opened the zip to read the one.)
+  const buffer = readArchiveModelEntry(resolved.fullPath, entryPath);
   if (!buffer) return res.status(404).json({ error: 'entry not found' });
 
   res.setHeader('Content-Type', 'application/octet-stream');

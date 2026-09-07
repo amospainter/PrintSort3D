@@ -49,3 +49,28 @@ export function readArchiveEntry(filePath: string, entryPath: string): Buffer | 
     return null;
   }
 }
+
+/**
+ * Reads a single model entry (.stl/.3mf/.obj) out of a .zip, opening the archive once. This
+ * is what the /api/files/:id/archive-raw route wants — it previously called
+ * listArchiveModelEntries() (to validate the path is one we'd enumerate) and then
+ * readArchiveEntry() (to read it), opening and re-parsing the whole zip twice per request.
+ * Returns null when the entry is absent, isn't a model file, or can't be decoded.
+ */
+export function readArchiveModelEntry(filePath: string, entryPath: string): Buffer | null {
+  let zip: AdmZip;
+  try {
+    zip = new AdmZip(filePath);
+  } catch {
+    return null;
+  }
+
+  const entry = zip.getEntry(entryPath);
+  if (!entry || entry.isDirectory) return null;
+  if (!MODEL_EXTS.has(path.extname(entry.entryName).toLowerCase())) return null;
+  try {
+    return entry.getData();
+  } catch {
+    return null;
+  }
+}

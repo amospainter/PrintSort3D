@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { db } from './db';
+import { db, RECOMPUTE_DUPLICATE_COUNTS_SQL } from './db';
 import { loadConfig } from './config';
 import { extractThreeMfData, groupImagesByPlate, computePlateInfo } from './threeMf';
 import { extractSliceInfo } from './sliceInfo';
@@ -193,6 +193,13 @@ async function processFile(fileId: number, fullPath: string, ext: string): Promi
   db.prepare('UPDATE files SET scanner_version = ? WHERE id = ?').run(CURRENT_SCANNER_VERSION, fileId);
 }
 
+// Materialized-column maintenance for `files.duplicate_count`. Cheap even for a large catalog
+// (the hash indexes make each correlated count O(log n + matches)), and it only runs at the
+// end of a scan and on delete/purge — never per request.
+export function recomputeDuplicateCounts(): void {
+  db.exec(RECOMPUTE_DUPLICATE_COUNTS_SQL);
+}
+
 export type RescanStatus = 'ok' | 'missing' | 'not_found';
 
 // Forces one file through processFile() regardless of scanner_version/mtime — a manual
@@ -219,6 +226,7 @@ export async function rescanFile(fileId: number): Promise<RescanStatus> {
   db.prepare('UPDATE files SET size_bytes = ?, mtime = ?, missing = 0 WHERE id = ?').run(stat.size, mtime, fileId);
 
   await processFile(fileId, fullPath, ext);
+  recomputeDuplicateCounts(); // this file's hashes may have changed, shifting others' counts
   return 'ok';
 }
 
@@ -346,6 +354,10 @@ async function doScan(options: { rootLabel?: string } = {}): Promise<ScanResult>
       }
     }
   }
+
+  // Refresh the materialized duplicate counts once, now that every new/changed file has its
+  // hashes. (Adding one file can change another's count, so this is whole-table.)
+  recomputeDuplicateCounts();
 
   return result;
 }
