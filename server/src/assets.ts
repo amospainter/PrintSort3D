@@ -44,8 +44,8 @@ export const THUMBNAIL_FILENAME = 'thumbnail.png';
 /**
  * Writes a file's thumbnail PNG alongside its other cached assets at
  * ASSETS_DIR/<fileId>/thumbnail.png. Returns the stored filename (for `files.thumbnail_path`).
- * Feeds both pipelines: 3MF embedded plate renders (scanner) and client-rendered
- * STL/OBJ thumbnails (POST /api/files/:id/thumbnail).
+ * Both thumbnail sources go through here, from the scanner: a Bambu 3MF's embedded plate
+ * image, and `thumbnail.ts`'s CPU render of the baked mesh for everything else.
  */
 export function saveThumbnail(fileId: number, buffer: Buffer): string {
   const outDir = path.join(ASSETS_DIR, String(fileId));
@@ -116,7 +116,12 @@ export function cacheBakedMesh(fileId: number, filePath: string, ext: string): s
     return null; // a single unparseable model must not abort the whole scan
   }
   if (!parts || parts.length === 0) return null;
+  return cacheBakedMeshParts(fileId, parts);
+}
 
+/** The caching half of cacheBakedMesh, for callers that already hold the baked parts
+ *  (the scanner bakes once and also feeds the same parts to the thumbnail renderer). */
+export function cacheBakedMeshParts(fileId: number, parts: BakedPart[]): string {
   const gz = zlib.gzipSync(serializeBakedMesh(parts));
   const outDir = path.join(ASSETS_DIR, String(fileId));
   fs.mkdirSync(outDir, { recursive: true });

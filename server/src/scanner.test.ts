@@ -189,6 +189,41 @@ describe('runScan', () => {
     expect(blob.readUInt32LE(12)).toBe(0); // non-indexed triangle soup
   });
 
+  it('renders a server-side PNG thumbnail for a plain STL (no GPU) from the baked mesh', async () => {
+    writeBinaryStlWithKnownSize('thumb-cube.stl', [10, 20, 30]);
+    await runScan();
+    const row = db.prepare("SELECT * FROM files WHERE filename = 'thumb-cube.stl'").get() as any;
+    expect(row.thumbnail_path).toBe('thumbnail.png');
+
+    const png = fs.readFileSync(path.join(process.env.ASSETS_DIR!, String(row.id), 'thumbnail.png'));
+    expect(Array.from(png.subarray(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
+  });
+
+  it('does not render a thumbnail over a Bambu 3MF that has its own embedded plate image', async () => {
+    // writeBambu3mf embeds Metadata/plate_1.png (a real 1×1 PNG). That should win over a
+    // synthetic render — assert the cached thumbnail is the tiny embedded one, not a 256px raster.
+    writeBambu3mf('embedded-thumb.3mf', ONE_PIXEL_PNG);
+    await runScan();
+    const row = db.prepare("SELECT * FROM files WHERE filename = 'embedded-thumb.3mf'").get() as any;
+    expect(row.thumbnail_path).toBe('thumbnail.png');
+    const png = fs.readFileSync(path.join(process.env.ASSETS_DIR!, String(row.id), 'thumbnail.png'));
+    expect(png.equals(ONE_PIXEL_PNG)).toBe(true);
+  });
+
+  it('backfills a missing thumbnail on rescan of a row stuck at an older scanner_version', async () => {
+    writeBinaryStlWithKnownSize('stale-thumb.stl', [15, 15, 15]);
+    await runScan();
+    const id = (db.prepare("SELECT id FROM files WHERE filename = 'stale-thumb.stl'").get() as any).id;
+    fs.rmSync(path.join(process.env.ASSETS_DIR!, String(id), 'thumbnail.png'), { force: true });
+    db.prepare('UPDATE files SET thumbnail_path = NULL, scanner_version = 0 WHERE id = ?').run(id);
+
+    await runScan();
+
+    const after = db.prepare('SELECT * FROM files WHERE id = ?').get(id) as any;
+    expect(after.thumbnail_path).toBe('thumbnail.png');
+    expect(fs.existsSync(path.join(process.env.ASSETS_DIR!, String(id), 'thumbnail.png'))).toBe(true);
+  });
+
   it('backfills filaments_json on a rescan of a row stuck at an older scanner_version', async () => {
     writeBambu3mf('legacy-filaments.3mf');
     await runScan();

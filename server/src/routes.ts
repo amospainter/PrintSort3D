@@ -5,7 +5,7 @@ import { db } from './db';
 import { loadConfig, saveConfig, RootConfig, PlateSize } from './config';
 import { runScan, rescanFile } from './scanner';
 import { ASSETS_DIR } from './paths';
-import { deleteCachedImages, saveThumbnail, thumbnailFilePath, BAKED_MESH_FILENAME } from './assets';
+import { deleteCachedImages, thumbnailFilePath, BAKED_MESH_FILENAME } from './assets';
 import { listArchiveModelEntries, readArchiveEntry } from './archive';
 import { openInSlicer } from './openInApp';
 
@@ -575,21 +575,9 @@ router.post('/files/:id/open', async (req, res) => {
   }
 });
 
-router.post('/files/:id/thumbnail', (req, res) => {
-  const id = Number(req.params.id);
-  const exists = db.prepare('SELECT id FROM files WHERE id = ?').get(id);
-  if (!exists) return res.status(404).json({ error: 'not found' });
-
-  const { imageBase64 } = req.body as { imageBase64?: string };
-  if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
-
-  const base64Data = imageBase64.replace(/^data:image\/png;base64,/, '');
-  const buffer = Buffer.from(base64Data, 'base64');
-  const stored = saveThumbnail(id, buffer);
-  db.prepare('UPDATE files SET thumbnail_path = ? WHERE id = ?').run(stored, id);
-  res.json({ ok: true });
-});
-
+// Thumbnails are rendered server-side at scan time now (embedded plate image for Bambu
+// 3MFs, else a CPU raster of the baked mesh — see scanner.ts / thumbnail.ts). There is no
+// upload endpoint; this only serves the cached PNG.
 router.get('/files/:id/thumbnail', (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).end();

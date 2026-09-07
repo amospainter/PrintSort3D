@@ -2,7 +2,7 @@
 
 A local web app for cataloging, browsing, and searching your STL / 3MF / OBJ / ZIP print files. Scans folders you point it at, generates a thumbnail for each model (extracted directly from Bambu Lab `.3mf` files, or rendered in-browser for everything else), and lets you tag and take notes on each file.
 
-See [docs/architecture.md](docs/architecture.md) for how it's built, [docs/api.md](docs/api.md) for the HTTP API, and [docs/testing.md](docs/testing.md) for the test suites.
+See [docs/architecture.md](docs/architecture.md) for how it's built, [docs/api.md](docs/api.md) for the HTTP API, [docs/testing.md](docs/testing.md) for the test suites, and [docs/backlog.md](docs/backlog.md) for deferred work.
 
 ![Library grid](docs/screenshots/library.png)
 
@@ -123,5 +123,5 @@ Runs the server test suite (Vitest + Supertest) and the client test suite (Vites
 ```
 server/   Express + TypeScript API, SQLite catalog, filesystem scanner
 client/   React + TypeScript frontend (Vite), three.js viewer/thumbnails
-docs/     Architecture, API reference, and testing docs
+docs/     Architecture, API reference, testing docs, and the deferred-work backlog
 ```

@@ -89,6 +89,28 @@ Update notes and/or tags for a file. Body (both optional, at least one expected)
 - `tags`, if provided, **replaces** the file's full tag set (not merged). Each tag is trimmed and lowercased; empty strings are dropped; new tag names are created automatically.
 - Returns the updated file object, or `404` if the id doesn't exist.
 
+## `POST /api/files/bulk-tags`
+
+Adds and/or removes a set of tags across many files in one transaction (the Library's
+multi-select bulk-tag toolbar). Body:
+
+```ts
+{ fileIds: number[], add?: string[], remove?: string[] }
+```
+
+Tag names are trimmed/lowercased; `add` names are created on demand; `remove` names that
+don't exist are ignored; ids that don't exist are skipped. `400` if `fileIds` is empty or
+neither `add` nor `remove` is given. Returns `{ updated: number }`.
+
+## `POST /api/files/:id/open`
+
+Opens the file in the user's slicer (Bambu Studio by default) on the **host running the
+server**. Restricted to loopback callers (unless `PRINTSORT_ALLOW_REMOTE_LAUNCH=1`) since it
+spawns a desktop GUI process. Resolution order: `config.slicerCommand` (Settings, or
+`PRINTSORT_SLICER_COMMAND`) → an auto-detected Bambu Studio install → the OS default handler.
+`400` for a `.zip`, `404` for an unknown id, `403` from a non-local caller, `500` if the
+launch fails. Returns `{ ok: true, method, command }`.
+
 ## `GET /api/tags`
 
 Returns every distinct tag in use, alphabetically by name:
@@ -109,11 +131,15 @@ Removes the tag from every file and deletes it. Returns `{ ok: true }`, or `404`
 
 ## `GET /api/settings`
 
-Returns app-wide settings: `{ defaultPlateSize: { x: number, y: number } }` (mm).
+Returns app-wide settings: `{ defaultPlateSize: { x: number, y: number }, slicerCommand: string }`
+(`defaultPlateSize` in mm; `slicerCommand` is the path to the slicer executable for
+`POST /api/files/:id/open`, `""` = auto-detect).
 
 ## `PUT /api/settings`
 
-Updates app-wide settings. Body: `{ defaultPlateSize: { x: number, y: number } }` with positive values (mm). Returns the saved settings, or `400` if `x`/`y` aren't positive.
+Updates app-wide settings. Body: `{ defaultPlateSize: { x: number, y: number }, slicerCommand?: string }`
+— `defaultPlateSize` must have positive values (mm); `slicerCommand` is trimmed and, when
+omitted, left unchanged. Returns the saved settings, or `400` if `x`/`y` aren't positive.
 
 ## `POST /api/scan`
 
@@ -162,23 +188,19 @@ one does **not** delete its catalog entries.
 
 Note: this only updates `config.json` and the `roots` table — it does **not** scan. Call `POST /api/scan` afterward to pick up files from a newly added root.
 
-## `POST /api/files/:id/thumbnail`
-
-Upload a generated thumbnail for a file (used by the client's in-browser renderer for STL/OBJ/non-Bambu-3MF files). Body:
-
-```ts
-{ imageBase64: string }  // a data URL (e.g. "data:image/png;base64,...") or bare base64
-```
-
-Saves to `server/assets/<id>/thumbnail.png` and updates the file's `thumbnail_path`. Returns `{ ok: true }`, or `404` if the id doesn't exist, or `400` if `imageBase64` is missing.
-
 ## `GET /api/files/:id/thumbnail`
 
-Serves a file's cached thumbnail PNG from `server/assets/<id>/thumbnail.png`. `400` if `:id` isn't an integer, `404` if no thumbnail has been cached for it yet.
+Serves a file's cached thumbnail PNG from `server/assets/<id>/thumbnail.png`. `400` if `:id`
+isn't an integer, `404` if no thumbnail has been cached for it yet.
+
+Thumbnails are produced **entirely server-side at scan time** — the embedded plate image for
+a Bambu 3MF, otherwise a CPU-rasterized render of the baked mesh (`server/src/thumbnail.ts`,
+no GPU/WebGL). There is no upload endpoint.
 
 ## `GET /api/raw/:id`
 
-Streams the actual model file from disk (used by the client to fetch bytes for rendering — both the interactive viewer and the thumbnail generator).
+Streams the actual model file from disk (used by the interactive viewer to fetch bytes when
+it falls back to parsing the raw file).
 
 - Resolves `root.path + relativePath`, and rejects with `400 { error: "invalid path" }` if the resolved path would land outside the file's configured root (a defense against a corrupted/tampered `relative_path` escaping via `../`).
 - Returns `404` if the file's DB record doesn't exist, or if the resolved path doesn't exist on disk (e.g. flagged `missing`).

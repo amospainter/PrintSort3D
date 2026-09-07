@@ -189,12 +189,6 @@ export const api = {
       body: JSON.stringify(roots),
     });
   },
-  uploadThumbnail(id: number, imageBase64: string) {
-    return request<{ ok: true }>(`/api/files/${id}/thumbnail`, {
-      method: 'POST',
-      body: JSON.stringify({ imageBase64 }),
-    });
-  },
   rawFileUrl(id: number) {
     return `/api/raw/${id}`;
   },

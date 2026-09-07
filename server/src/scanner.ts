@@ -3,10 +3,12 @@ import path from 'path';
 import { db } from './db';
 import { loadConfig } from './config';
 import { extractThreeMfData, groupImagesByPlate, computePlateBuildIndices, computePlateNames } from './threeMf';
-import { cacheThreeMfImages, cacheBakedMesh, saveThumbnail } from './assets';
+import { cacheThreeMfImages, cacheBakedMeshParts, saveThumbnail } from './assets';
 import { computeDimensions } from './dimensions';
 import { computeContentHash, computeGeometryHash } from './fingerprint';
 import { listArchiveModelEntries } from './archive';
+import { bakeModel, type BakedPart } from './meshBake';
+import { renderBakedThumbnail } from './thumbnail';
 
 const SUPPORTED_EXTS = new Set(['.stl', '.3mf', '.obj', '.zip']);
 
@@ -18,7 +20,7 @@ const SUPPORTED_EXTS = new Set(['.stl', '.3mf', '.obj', '.zip']);
 // disk. Legitimately-empty results (a file with no parseable geometry) still stop being
 // reprocessed once caught up, unlike inferring "needs backfill" from a nullable column, which
 // would retry forever for such files.
-const CURRENT_SCANNER_VERSION = 9;
+const CURRENT_SCANNER_VERSION = 10;
 
 function walk(dir: string, fileList: string[] = []): string[] {
   let entries: fs.Dirent[];
@@ -64,7 +66,9 @@ function applyDimensions(fileId: number, fullPath: string, ext: string): void {
   );
 }
 
-async function apply3mfMetadata(fileId: number, fullPath: string): Promise<void> {
+// Returns whether the 3MF carried its own embedded plate thumbnail (Bambu/Orca) — when it
+// did, the scanner skips rendering a synthetic one over the top of it.
+async function apply3mfMetadata(fileId: number, fullPath: string): Promise<boolean> {
   const extracted = extractThreeMfData(fullPath);
   let thumbPath: string | null = null;
   if (extracted.thumbnailBuffer) {
@@ -97,14 +101,35 @@ async function apply3mfMetadata(fileId: number, fullPath: string): Promise<void>
     extracted.plateSize ? JSON.stringify(extracted.plateSize) : null,
     fileId
   );
+  return thumbPath !== null;
 }
 
 // Bakes STL/OBJ/3MF into a ready-to-render binary mesh cached under ASSETS_DIR so the viewer
 // skips unzipping + DOM-parsing the source file in the browser. `mesh_path` is the cached
 // filename, or NULL when the bake found no geometry (viewer falls back to the raw file).
-function applyBakedMesh(fileId: number, fullPath: string, ext: string): void {
-  const meshPath = cacheBakedMesh(fileId, fullPath, ext);
+// Returns the baked parts so the caller can also feed them to the thumbnail renderer
+// without parsing the source file a second time.
+function applyBakedMesh(fileId: number, fullPath: string, ext: string): BakedPart[] | null {
+  let parts: BakedPart[] | null;
+  try {
+    parts = bakeModel(fullPath, ext);
+  } catch {
+    parts = null; // one unparseable model must not abort the scan
+  }
+  const meshPath = parts && parts.length > 0 ? cacheBakedMeshParts(fileId, parts) : null;
   db.prepare('UPDATE files SET mesh_path = ? WHERE id = ?').run(meshPath, fileId);
+  return parts && parts.length > 0 ? parts : null;
+}
+
+// Renders a CPU-rasterized thumbnail (no GPU / WebGL — the server is often headless in
+// Docker) from the already-baked mesh and caches it at ASSETS_DIR/<id>/thumbnail.png.
+// Skipped when the file already supplied its own thumbnail (a Bambu 3MF's embedded plate
+// image, handled in apply3mfMetadata).
+async function applyRenderedThumbnail(fileId: number, parts: BakedPart[]): Promise<void> {
+  const png = await renderBakedThumbnail(parts);
+  if (!png) return;
+  const stored = saveThumbnail(fileId, png);
+  db.prepare('UPDATE files SET thumbnail_path = ? WHERE id = ?').run(stored, fileId);
 }
 
 function applyArchiveMetadata(fileId: number, fullPath: string): void {
@@ -124,14 +149,19 @@ async function applyFingerprint(fileId: number, fullPath: string, ext: string): 
 
 async function processFile(fileId: number, fullPath: string, ext: string): Promise<void> {
   applyDimensions(fileId, fullPath, ext);
+  let bakedParts: BakedPart[] | null = null;
   if (ext === '.stl' || ext === '.obj' || ext === '.3mf') {
-    applyBakedMesh(fileId, fullPath, ext);
+    bakedParts = applyBakedMesh(fileId, fullPath, ext);
   }
+  let hasEmbeddedThumbnail = false;
   if (ext === '.3mf') {
-    await apply3mfMetadata(fileId, fullPath);
+    hasEmbeddedThumbnail = await apply3mfMetadata(fileId, fullPath);
   }
   if (ext === '.zip') {
     applyArchiveMetadata(fileId, fullPath);
+  }
+  if (bakedParts && !hasEmbeddedThumbnail) {
+    await applyRenderedThumbnail(fileId, bakedParts);
   }
   await applyFingerprint(fileId, fullPath, ext);
   db.prepare('UPDATE files SET scanner_version = ? WHERE id = ?').run(CURRENT_SCANNER_VERSION, fileId);

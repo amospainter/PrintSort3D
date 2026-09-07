@@ -290,19 +290,20 @@ describe('folder routes', () => {
 });
 
 describe('thumbnail routes', () => {
-  it('accepts an uploaded thumbnail and serves it back', async () => {
-    const fileId = (await request(app).get('/api/files')).body.items[0].id;
-    const onePixelPng =
-      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  it('serves the server-rendered thumbnail for a scanned model that has geometry', async () => {
+    const sized = (await request(app).get('/api/files?query=sized')).body.items[0];
+    expect(sized.thumbnailUrl).toBe(`/api/files/${sized.id}/thumbnail`);
 
-    const upload = await request(app).post(`/api/files/${fileId}/thumbnail`).send({ imageBase64: onePixelPng });
-    expect(upload.status).toBe(200);
-
-    const fileRes = await request(app).get(`/api/files/${fileId}`);
-    expect(fileRes.body.thumbnailUrl).toBe(`/api/files/${fileId}/thumbnail`);
-
-    const imgRes = await request(app).get(`/api/files/${fileId}/thumbnail`);
+    const imgRes = await request(app).get(`/api/files/${sized.id}/thumbnail`);
     expect(imgRes.status).toBe(200);
+    expect(imgRes.headers['content-type']).toContain('png');
+    // PNG magic bytes
+    expect(Array.from(imgRes.body.subarray(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
+  });
+
+  it('leaves thumbnailUrl null for a file with no parseable geometry', async () => {
+    const widget = (await request(app).get('/api/files?query=widget')).body.items[0];
+    expect(widget.thumbnailUrl).toBeNull();
   });
 
   it('returns 404 for a file with no cached thumbnail', async () => {

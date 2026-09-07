@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, type FileEntry, type TagInfo } from '../api';
-import { ThumbnailGenerator } from '../ThumbnailGenerator';
 import { Menu, MenuItem } from '../Menu';
 import { TagInput } from '../TagInput';
 import { TagChip } from '../TagChip';
@@ -181,11 +180,6 @@ export default function Library() {
     clearSelection();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
-
-  const needsThumbnail = useMemo(
-    () => files.filter((f) => !f.thumbnailUrl && !f.missing && f.ext !== '.zip').slice(0, 4),
-    [files]
-  );
 
   const goToPage = (p: number) => updateParams({ page: String(Math.min(Math.max(1, p), totalPages)) }, false);
 
@@ -515,10 +509,6 @@ export default function Library() {
           </button>
         </div>
       )}
-
-      {needsThumbnail.map((f) => (
-        <ThumbnailGenerator key={f.id} fileId={f.id} ext={f.ext} onDone={load} />
-      ))}
     </div>
   );
 }
