@@ -2,14 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import { db, RECOMPUTE_DUPLICATE_COUNTS_SQL } from './db';
 import { loadConfig } from './config';
-import { extractThreeMfData, groupImagesByPlate, computePlateInfo } from './threeMf';
-import { extractSliceInfo } from './sliceInfo';
-import { cacheThreeMfImages, cacheBakedMeshParts, saveThumbnail } from './assets';
-import { computeDimensions, dimensionsFromParts } from './dimensions';
-import { computeContentHash, computeGeometryHash, computeGeometryHashFromParts } from './fingerprint';
-import { listArchiveModelEntries } from './archive';
-import { bakeModel, type BakedPart } from './meshBake';
-import { renderBakedThumbnail } from './thumbnail';
+import { THUMBNAIL_FILENAME } from './assets';
+import { extractArtifactsPooled } from './scanPool';
+import { statFile, type FileArtifacts } from './scanArtifacts';
 
 const SUPPORTED_EXTS = new Set(['.stl', '.3mf', '.obj', '.zip']);
 
@@ -79,136 +74,62 @@ export interface ScanResult {
   added: number;
   updated: number;
   missing: number;
+  cancelled: boolean;
 }
 
-function applyDimensions(
-  fileId: number,
-  fullPath: string,
-  ext: string,
-  bakedParts: BakedPart[] | null
-): void {
-  // Prefer the mesh we already baked — no second parse of the file. Fall back to a direct
-  // parse for archives and anything the bake couldn't handle.
-  const dims = bakedParts ? dimensionsFromParts(bakedParts) : computeDimensions(fullPath, ext);
-  db.prepare('UPDATE files SET dimension_x = ?, dimension_y = ?, dimension_z = ? WHERE id = ?').run(
-    dims?.x ?? null,
-    dims?.y ?? null,
-    dims?.z ?? null,
-    fileId
-  );
-}
+// ─── DB write half ──────────────────────────────────────────────────────────────────────
+// Everything the extract step computed (scanArtifacts.ts) collapsed into at most two UPDATEs
+// per file (was six). The extract step already wrote the derived files under ASSETS_DIR.
 
-// Returns whether the 3MF carried its own embedded plate thumbnail (Bambu/Orca) — when it
-// did, the scanner skips rendering a synthetic one over the top of it.
-async function apply3mfMetadata(fileId: number, fullPath: string): Promise<boolean> {
-  const extracted = extractThreeMfData(fullPath);
-  let thumbPath: string | null = null;
-  if (extracted.thumbnailBuffer) {
-    thumbPath = saveThumbnail(fileId, extracted.thumbnailBuffer);
-  }
-  const embeddedImages = await cacheThreeMfImages(fileId, fullPath);
-  const plates = groupImagesByPlate(embeddedImages);
-  const { buildIndices: buildIndicesByPlate, names: namesByPlate } = computePlateInfo(fullPath);
-  const sliceInfo = extractSliceInfo(fullPath);
-  for (const plate of plates) {
-    const indices = buildIndicesByPlate.get(plate.index);
-    if (indices) plate.buildItemIndices = indices;
-    const name = namesByPlate.get(plate.index);
-    if (name) plate.name = name;
-  }
-
+function writeArtifacts(fileId: number, a: FileArtifacts): void {
   db.prepare(
-    `UPDATE files SET thumbnail_path = ?, filament_type = ?, filament_color = ?, filaments_json = ?, layer_height = ?,
-     slicer_metadata_json = ?, embedded_images_json = ?, plates_json = ?, plate_size_json = ?, slice_info_json = ?
+    `UPDATE files SET
+       dimension_x = ?, dimension_y = ?, dimension_z = ?,
+       mesh_path = ?,
+       content_hash = ?, geometry_hash = ?,
+       thumbnail_path = ?,
+       archive_entry_count = ?,
+       scanner_version = ?
      WHERE id = ?`
   ).run(
-    thumbPath,
-    extracted.filamentType,
-    extracted.filamentColor,
-    extracted.filaments.length > 0 ? JSON.stringify(extracted.filaments) : null,
-    extracted.layerHeight,
-    extracted.rawMetadata ? JSON.stringify(extracted.rawMetadata) : null,
-    embeddedImages.length > 0 ? JSON.stringify(embeddedImages) : null,
-    plates.length > 0 ? JSON.stringify(plates) : null,
-    extracted.plateSize ? JSON.stringify(extracted.plateSize) : null,
-    sliceInfo ? JSON.stringify(sliceInfo) : null,
+    a.dimensions?.x ?? null,
+    a.dimensions?.y ?? null,
+    a.dimensions?.z ?? null,
+    a.meshCached ? 'mesh.bin.gz' : null,
+    a.contentHash,
+    a.geometryHash,
+    a.thumbnailWritten ? THUMBNAIL_FILENAME : null,
+    a.archiveEntryCount,
+    CURRENT_SCANNER_VERSION,
     fileId
   );
-  return thumbPath !== null;
-}
 
-// Bakes STL/OBJ/3MF into a ready-to-render binary mesh cached under ASSETS_DIR so the viewer
-// skips unzipping + DOM-parsing the source file in the browser. `mesh_path` is the cached
-// filename, or NULL when the bake found no geometry (viewer falls back to the raw file).
-// Returns the baked parts so the caller can also feed them to the thumbnail renderer
-// without parsing the source file a second time.
-function applyBakedMesh(fileId: number, fullPath: string, ext: string): BakedPart[] | null {
-  let parts: BakedPart[] | null;
-  try {
-    parts = bakeModel(fullPath, ext);
-  } catch {
-    parts = null; // one unparseable model must not abort the scan
+  if (a.threeMf) {
+    const tm = a.threeMf;
+    db.prepare(
+      `UPDATE files SET
+         filament_type = ?, filament_color = ?, filaments_json = ?, layer_height = ?,
+         slicer_metadata_json = ?, embedded_images_json = ?, plates_json = ?,
+         plate_size_json = ?, slice_info_json = ?
+       WHERE id = ?`
+    ).run(
+      tm.filamentType,
+      tm.filamentColor,
+      tm.filamentsJson,
+      tm.layerHeight,
+      tm.slicerMetadataJson,
+      tm.embeddedImagesJson,
+      tm.platesJson,
+      tm.plateSizeJson,
+      tm.sliceInfoJson,
+      fileId
+    );
   }
-  const meshPath = parts && parts.length > 0 ? cacheBakedMeshParts(fileId, parts) : null;
-  db.prepare('UPDATE files SET mesh_path = ? WHERE id = ?').run(meshPath, fileId);
-  return parts && parts.length > 0 ? parts : null;
-}
-
-// Renders a CPU-rasterized thumbnail (no GPU / WebGL — the server is often headless in
-// Docker) from the already-baked mesh and caches it at ASSETS_DIR/<id>/thumbnail.png.
-// Skipped when the file already supplied its own thumbnail (a Bambu 3MF's embedded plate
-// image, handled in apply3mfMetadata).
-async function applyRenderedThumbnail(fileId: number, parts: BakedPart[]): Promise<void> {
-  const png = await renderBakedThumbnail(parts);
-  if (!png) return;
-  const stored = saveThumbnail(fileId, png);
-  db.prepare('UPDATE files SET thumbnail_path = ? WHERE id = ?').run(stored, fileId);
-}
-
-function applyArchiveMetadata(fileId: number, fullPath: string): void {
-  const entries = listArchiveModelEntries(fullPath);
-  db.prepare('UPDATE files SET archive_entry_count = ? WHERE id = ?').run(entries.length, fileId);
-}
-
-async function applyFingerprint(
-  fileId: number,
-  fullPath: string,
-  ext: string,
-  bakedParts: BakedPart[] | null
-): Promise<void> {
-  // content_hash must be the raw file bytes (that's the point of it) — a cheap streamed read.
-  const contentHash = await computeContentHash(fullPath);
-  // geometry_hash can come from the mesh we already baked, saving two more full parses.
-  const geometryHash = bakedParts
-    ? computeGeometryHashFromParts(bakedParts)
-    : computeGeometryHash(fullPath, ext);
-  db.prepare('UPDATE files SET content_hash = ?, geometry_hash = ? WHERE id = ?').run(
-    contentHash,
-    geometryHash,
-    fileId
-  );
 }
 
 async function processFile(fileId: number, fullPath: string, ext: string): Promise<void> {
-  // Bake first: dimensions and the geometry hash are both derived from these parts rather
-  // than re-parsing the file (a 3MF was previously unzipped and XML-walked ~4× per scan).
-  let bakedParts: BakedPart[] | null = null;
-  if (ext === '.stl' || ext === '.obj' || ext === '.3mf') {
-    bakedParts = applyBakedMesh(fileId, fullPath, ext);
-  }
-  applyDimensions(fileId, fullPath, ext, bakedParts);
-  let hasEmbeddedThumbnail = false;
-  if (ext === '.3mf') {
-    hasEmbeddedThumbnail = await apply3mfMetadata(fileId, fullPath);
-  }
-  if (ext === '.zip') {
-    applyArchiveMetadata(fileId, fullPath);
-  }
-  if (bakedParts && !hasEmbeddedThumbnail) {
-    await applyRenderedThumbnail(fileId, bakedParts);
-  }
-  await applyFingerprint(fileId, fullPath, ext, bakedParts);
-  db.prepare('UPDATE files SET scanner_version = ? WHERE id = ?').run(CURRENT_SCANNER_VERSION, fileId);
+  const artifacts = await extractArtifactsPooled(fileId, fullPath, ext);
+  writeArtifacts(fileId, artifacts);
 }
 
 // Materialized-column maintenance for `files.duplicate_count`. Cheap even for a large catalog
@@ -218,12 +139,20 @@ export function recomputeDuplicateCounts(): void {
   db.exec(RECOMPUTE_DUPLICATE_COUNTS_SQL);
 }
 
+// Count of rows that a plain rescan would reprocess (behind on scan-time processing). The UI
+// shows this after a scanner bump as "N files need a metadata update".
+export function pendingReprocessCount(): number {
+  return (
+    db
+      .prepare('SELECT COUNT(*) as c FROM files WHERE missing = 0 AND scanner_version < ?')
+      .get(CURRENT_SCANNER_VERSION) as { c: number }
+  ).c;
+}
+
 export type RescanStatus = 'ok' | 'missing' | 'not_found';
 
-// Forces one file through processFile() regardless of scanner_version/mtime — a manual
-// "rescan this one" action for fast iteration while developing/testing scan-time logic,
-// as opposed to runScan()'s catalog-wide pass which only reprocesses what's changed or
-// behind CURRENT_SCANNER_VERSION.
+// Forces one file through processFile() regardless of scanner_version/mtime — the per-file
+// "rescan this one" action.
 export async function rescanFile(fileId: number): Promise<RescanStatus> {
   const row = db
     .prepare(
@@ -233,51 +162,145 @@ export async function rescanFile(fileId: number): Promise<RescanStatus> {
   if (!row) return 'not_found';
 
   const fullPath = path.join(row.root_path, row.relative_path);
-  if (!fs.existsSync(fullPath)) {
+  const st = statFile(fullPath);
+  if (!st) {
     db.prepare('UPDATE files SET missing = 1 WHERE id = ?').run(fileId);
     return 'missing';
   }
 
-  const stat = fs.statSync(fullPath);
   const ext = path.extname(fullPath).toLowerCase();
-  const mtime = Math.floor(stat.mtimeMs);
-  db.prepare('UPDATE files SET size_bytes = ?, mtime = ?, missing = 0 WHERE id = ?').run(stat.size, mtime, fileId);
+  db.prepare('UPDATE files SET size_bytes = ?, mtime = ?, missing = 0 WHERE id = ?').run(
+    st.size,
+    Math.floor(st.mtimeMs),
+    fileId
+  );
 
   await processFile(fileId, fullPath, ext);
   recomputeDuplicateCounts(); // this file's hashes may have changed, shifting others' counts
   return 'ok';
 }
 
-// Only one scan runs at a time. Two concurrent runScan() calls would interleave their writes
-// and, worse, each has its own `seenFileIds` set — so one could flag a file `missing` that the
-// other is mid-way through processing. Callers that fire a scan while one is running get the
-// in-flight scan's result instead of starting a second. (`SCAN_ON_STARTUP` + an eager user
-// clicking Rescan is the common way to hit this.)
+// ─── Scan job state ─────────────────────────────────────────────────────────────────────
+
+export type ScanPhase =
+  | 'idle'
+  | 'walking'
+  | 'processing'
+  | 'flagging-missing'
+  | 'finalizing'
+  | 'done'
+  | 'cancelled'
+  | 'error';
+export type ScanMode = 'scan' | 'reprocess-stale' | 'reprocess-all';
+
+export interface ScanProgress {
+  running: boolean;
+  phase: ScanPhase;
+  mode: ScanMode;
+  rootLabel: string | null;
+  total: number; // files this pass will process (known once walking/enumeration is done)
+  processed: number;
+  added: number;
+  updated: number;
+  missing: number;
+  currentFile: string | null; // relative_path of the file being processed
+  startedAt: number | null;
+  finishedAt: number | null;
+  error: string | null;
+}
+
+function idleProgress(): ScanProgress {
+  return {
+    running: false,
+    phase: 'idle',
+    mode: 'scan',
+    rootLabel: null,
+    total: 0,
+    processed: 0,
+    added: 0,
+    updated: 0,
+    missing: 0,
+    currentFile: null,
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+  };
+}
+
+let progress: ScanProgress = idleProgress();
+let cancelRequested = false;
 let inFlightScan: Promise<ScanResult> | null = null;
 
 export function isScanning(): boolean {
   return inFlightScan !== null;
 }
 
-export function runScan(options: { rootLabel?: string } = {}): Promise<ScanResult> {
+export function getScanProgress(): ScanProgress {
+  return { ...progress };
+}
+
+/** Ask the running scan to stop after the current file. No-op if nothing is running. */
+export function requestScanCancel(): void {
+  if (inFlightScan) cancelRequested = true;
+}
+
+interface ScanOptions {
+  rootLabel?: string;
+  mode?: ScanMode;
+}
+
+export function runScan(options: ScanOptions = {}): Promise<ScanResult> {
   if (inFlightScan) return inFlightScan;
-  inFlightScan = doScan(options).finally(() => {
-    inFlightScan = null;
-  });
+  cancelRequested = false;
+  progress = {
+    ...idleProgress(),
+    running: true,
+    phase: 'walking',
+    mode: options.mode ?? 'scan',
+    rootLabel: options.rootLabel ?? null,
+    startedAt: Date.now(),
+  };
+  inFlightScan = doScan(options)
+    .then((r) => {
+      progress = {
+        ...progress,
+        running: false,
+        phase: r.cancelled ? 'cancelled' : 'done',
+        finishedAt: Date.now(),
+        currentFile: null,
+      };
+      return r;
+    })
+    .catch((err) => {
+      progress = {
+        ...progress,
+        running: false,
+        phase: 'error',
+        finishedAt: Date.now(),
+        error: err instanceof Error ? err.message : String(err),
+      };
+      throw err;
+    })
+    .finally(() => {
+      inFlightScan = null;
+    });
   return inFlightScan;
 }
 
-// `rootLabel` scopes the scan to a single watched folder (matched by its config label) —
-// the per-source "rescan this folder" action. The walk, the new/changed detection, and the
-// missing-flag pass at the end are all scoped to `scanRoots`, so a per-folder scan never
-// touches rows belonging to other roots. Omit it for the catalog-wide pass.
-async function doScan(options: { rootLabel?: string } = {}): Promise<ScanResult> {
+// ─── The scan itself ────────────────────────────────────────────────────────────────────
+
+async function doScan(options: ScanOptions): Promise<ScanResult> {
+  const mode = options.mode ?? 'scan';
+  return mode === 'scan' ? walkScan(options.rootLabel) : reprocessScan(mode, options.rootLabel);
+}
+
+// A plain "look at the filesystem" scan: walk each root, add new files, reprocess changed or
+// version-behind rows, flag files gone from disk as missing.
+async function walkScan(rootLabel: string | undefined): Promise<ScanResult> {
   const config = loadConfig();
   const scanRoots =
-    options.rootLabel != null
-      ? config.roots.filter((r) => r.label === options.rootLabel)
-      : config.roots;
-  const result: ScanResult = { added: 0, updated: 0, missing: 0 };
+    rootLabel != null ? config.roots.filter((r) => r.label === rootLabel) : config.roots;
+  const result: ScanResult = { added: 0, updated: 0, missing: 0, cancelled: false };
   const seenFileIds = new Set<number>();
   // Roots whose path is currently unreachable (unplugged drive, offline NAS, Docker mount not
   // yet up). Their catalogued rows are left exactly as they are — flagging a whole library
@@ -286,11 +309,12 @@ async function doScan(options: { rootLabel?: string } = {}): Promise<ScanResult>
   // is treated the same way (almost always an unmounted share, not a real bulk deletion).
   const unavailableRootIds = new Set<number>();
 
+  // Enumerate everything first so `progress.total` is meaningful.
+  const walked: { rootId: number; rootPath: string; files: string[] }[] = [];
   for (const root of scanRoots) {
     const rootId = upsertRoot(root.path, root.label);
     const exists = fs.existsSync(root.path);
     const files = exists ? walk(root.path) : [];
-
     if (!exists) {
       unavailableRootIds.add(rootId);
     } else if (files.length === 0) {
@@ -299,14 +323,29 @@ async function doScan(options: { rootLabel?: string } = {}): Promise<ScanResult>
       ).c;
       if (rowCount > 0) unavailableRootIds.add(rootId);
     }
+    walked.push({ rootId, rootPath: root.path, files });
+  }
 
+  progress = {
+    ...progress,
+    phase: 'processing',
+    total: walked.reduce((n, w) => n + w.files.length, 0),
+  };
+
+  for (const { rootId, rootPath, files } of walked) {
     for (const fullPath of files) {
+      if (cancelRequested) {
+        result.cancelled = true;
+        break;
+      }
+      const relativePath = path.relative(rootPath, fullPath);
+      progress = { ...progress, currentFile: relativePath, processed: progress.processed + 1 };
       try {
-        const relativePath = path.relative(root.path, fullPath);
-        const stat = fs.statSync(fullPath);
+        const st = statFile(fullPath);
+        if (!st) continue;
         const ext = path.extname(fullPath).toLowerCase();
         const filename = path.basename(fullPath);
-        const mtime = Math.floor(stat.mtimeMs);
+        const mtime = Math.floor(st.mtimeMs);
 
         const existing = db
           .prepare('SELECT id, mtime, scanner_version FROM files WHERE root_id = ? AND relative_path = ?')
@@ -314,15 +353,14 @@ async function doScan(options: { rootLabel?: string } = {}): Promise<ScanResult>
 
         if (existing) {
           // Recorded as seen before any risky parsing below, so a corrupt file that throws
-          // partway through doesn't also get wrongly flagged `missing` by the pass at the
-          // end of this function.
+          // partway through doesn't also get wrongly flagged `missing` by the pass at the end.
           seenFileIds.add(existing.id);
           const mtimeChanged = existing.mtime !== mtime;
           const needsBackfill = existing.scanner_version < CURRENT_SCANNER_VERSION;
 
           if (mtimeChanged) {
             db.prepare('UPDATE files SET size_bytes = ?, mtime = ?, missing = 0 WHERE id = ?').run(
-              stat.size,
+              st.size,
               mtime,
               existing.id
             );
@@ -333,6 +371,7 @@ async function doScan(options: { rootLabel?: string } = {}): Promise<ScanResult>
           if (mtimeChanged || needsBackfill) {
             await processFile(existing.id, fullPath, ext);
             result.updated++;
+            progress = { ...progress, updated: result.updated };
           }
         } else {
           const info = db
@@ -340,42 +379,115 @@ async function doScan(options: { rootLabel?: string } = {}): Promise<ScanResult>
               `INSERT INTO files (root_id, relative_path, filename, ext, size_bytes, mtime, added_at, thumbnail_path, missing)
                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0)`
             )
-            .run(rootId, relativePath, filename, ext, stat.size, mtime, Date.now());
+            .run(rootId, relativePath, filename, ext, st.size, mtime, Date.now());
           const fileId = info.lastInsertRowid as number;
           seenFileIds.add(fileId);
           result.added++;
+          progress = { ...progress, added: result.added };
 
           await processFile(fileId, fullPath, ext);
         }
       } catch (err) {
-        // A single corrupt/unreadable file (bad zip CRC, truncated STL, permissions error,
-        // etc.) shouldn't abort the scan for every other file in the folder — log and move on.
+        // A single corrupt/unreadable file shouldn't abort the scan for every other file.
         console.error(`Scan: failed to process ${fullPath}:`, err);
       }
+      await yieldToLoop();
     }
+    if (result.cancelled) break;
   }
 
-  // Mark files not seen in this scan as missing — but only within roots that were actually
-  // reachable this pass (see `unavailableRootIds`).
-  const rootIds = scanRoots
-    .map((r) => upsertRoot(r.path, r.label))
-    .filter((id) => !unavailableRootIds.has(id));
-  if (rootIds.length > 0) {
-    const placeholders = rootIds.map(() => '?').join(',');
-    const allFiles = db
-      .prepare(`SELECT id FROM files WHERE root_id IN (${placeholders})`)
-      .all(...rootIds) as { id: number }[];
-    for (const f of allFiles) {
-      if (!seenFileIds.has(f.id)) {
-        db.prepare('UPDATE files SET missing = 1 WHERE id = ?').run(f.id);
-        result.missing++;
+  if (!result.cancelled) {
+    // Mark files not seen in this scan as missing — but only within roots that were actually
+    // reachable this pass (see `unavailableRootIds`). A cancelled scan skips this entirely:
+    // it never finished looking, so it can't conclude anything is gone.
+    progress = { ...progress, phase: 'flagging-missing', currentFile: null };
+    const rootIds = scanRoots
+      .map((r) => upsertRoot(r.path, r.label))
+      .filter((id) => !unavailableRootIds.has(id));
+    if (rootIds.length > 0) {
+      const placeholders = rootIds.map(() => '?').join(',');
+      const allFiles = db
+        .prepare(`SELECT id FROM files WHERE root_id IN (${placeholders})`)
+        .all(...rootIds) as { id: number }[];
+      for (const f of allFiles) {
+        if (!seenFileIds.has(f.id)) {
+          db.prepare('UPDATE files SET missing = 1 WHERE id = ?').run(f.id);
+          result.missing++;
+        }
       }
     }
+    progress = { ...progress, missing: result.missing };
   }
 
-  // Refresh the materialized duplicate counts once, now that every new/changed file has its
-  // hashes. (Adding one file can change another's count, so this is whole-table.)
+  progress = { ...progress, phase: 'finalizing', currentFile: null };
   recomputeDuplicateCounts();
-
   return result;
+}
+
+// A "reprocess" pass: no filesystem walk and no missing-flag pass. Re-runs the extract/write
+// step over existing rows — 'reprocess-stale' for rows behind on scanner_version (the "resume
+// an interrupted scan" / "backfill after a version bump" case), 'reprocess-all' for every
+// non-missing row.
+async function reprocessScan(
+  mode: 'reprocess-stale' | 'reprocess-all',
+  rootLabel: string | undefined
+): Promise<ScanResult> {
+  const result: ScanResult = { added: 0, updated: 0, missing: 0, cancelled: false };
+
+  const clauses = ['f.missing = 0'];
+  const params: (string | number)[] = [];
+  if (mode === 'reprocess-stale') {
+    clauses.push('f.scanner_version < ?');
+    params.push(CURRENT_SCANNER_VERSION);
+  }
+  if (rootLabel != null) {
+    clauses.push('r.label = ?');
+    params.push(rootLabel);
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT f.id, f.relative_path as rel, f.ext as ext, r.path as rootPath
+       FROM files f JOIN roots r ON r.id = f.root_id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY f.id`
+    )
+    .all(...params) as { id: number; rel: string; ext: string; rootPath: string }[];
+
+  progress = { ...progress, phase: 'processing', total: rows.length };
+
+  for (const row of rows) {
+    if (cancelRequested) {
+      result.cancelled = true;
+      break;
+    }
+    progress = { ...progress, currentFile: row.rel, processed: progress.processed + 1 };
+    const fullPath = path.join(row.rootPath, row.rel);
+    try {
+      const st = statFile(fullPath);
+      if (!st) {
+        // Gone from disk since the last walk — flag it, don't reprocess.
+        db.prepare('UPDATE files SET missing = 1 WHERE id = ?').run(row.id);
+        result.missing++;
+        progress = { ...progress, missing: result.missing };
+        continue;
+      }
+      await processFile(row.id, fullPath, row.ext.toLowerCase());
+      result.updated++;
+      progress = { ...progress, updated: result.updated };
+    } catch (err) {
+      console.error(`Reprocess: failed on ${fullPath}:`, err);
+    }
+    await yieldToLoop();
+  }
+
+  progress = { ...progress, phase: 'finalizing', currentFile: null };
+  recomputeDuplicateCounts();
+  return result;
+}
+
+// Hand the event loop a turn between files so the API stays responsive during a long scan
+// even without the worker pool (inline processing otherwise monopolises the main thread).
+function yieldToLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }

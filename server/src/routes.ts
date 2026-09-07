@@ -3,7 +3,16 @@ import fs from 'fs';
 import path from 'path';
 import { db } from './db';
 import { loadConfig, saveConfig, RootConfig, PlateSize } from './config';
-import { runScan, rescanFile, isScanning, recomputeDuplicateCounts } from './scanner';
+import {
+  runScan,
+  rescanFile,
+  isScanning,
+  recomputeDuplicateCounts,
+  getScanProgress,
+  requestScanCancel,
+  pendingReprocessCount,
+  type ScanMode,
+} from './scanner';
 import { ASSETS_DIR } from './paths';
 import { deleteCachedImages, thumbnailFilePath, BAKED_MESH_FILENAME } from './assets';
 import { listArchiveModelEntries, readArchiveModelEntry } from './archive';
@@ -500,19 +509,42 @@ router.delete('/tags/:name', (req, res) => {
 });
 
 router.get('/scan/status', (_req, res) => {
-  res.json({ scanning: isScanning() });
+  // `scanning` kept for backwards compatibility; `progress` is the detailed view.
+  const progress = getScanProgress();
+  res.json({
+    scanning: isScanning(),
+    progress,
+    pendingReprocess: pendingReprocessCount(),
+  });
 });
+
+router.post('/scan/cancel', (_req, res) => {
+  const was = isScanning();
+  requestScanCancel();
+  res.json({ cancelling: was });
+});
+
+const SCAN_MODES: ScanMode[] = ['scan', 'reprocess-stale', 'reprocess-all'];
 
 router.post('/scan', async (req, res) => {
   try {
-    // Optional `{ root: <label> }` scopes the scan to one watched folder; omitted = whole catalog.
-    const { root } = (req.body ?? {}) as { root?: unknown };
+    // `{ root: <label> }` scopes the scan to one watched folder. `{ mode }` picks the kind of
+    // pass: 'scan' (default — walk the filesystem), 'reprocess-stale' (re-run scan-time
+    // processing on rows behind on scanner_version, no walk — the "resume"/"backfill" case),
+    // or 'reprocess-all' (every non-missing row).
+    const { root, mode } = (req.body ?? {}) as { root?: unknown; mode?: unknown };
     if (root !== undefined) {
       if (typeof root !== 'string' || !loadConfig().roots.some((r) => r.label === root)) {
         return res.status(404).json({ error: 'unknown root' });
       }
     }
-    const result = await runScan(typeof root === 'string' ? { rootLabel: root } : {});
+    if (mode !== undefined && !SCAN_MODES.includes(mode as ScanMode)) {
+      return res.status(400).json({ error: `mode must be one of ${SCAN_MODES.join(', ')}` });
+    }
+    const result = await runScan({
+      ...(typeof root === 'string' ? { rootLabel: root } : {}),
+      ...(mode ? { mode: mode as ScanMode } : {}),
+    });
     res.json(result);
   } catch (err) {
     // runScan() already isolates per-file failures internally; this is a last-resort net

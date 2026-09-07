@@ -1358,6 +1358,60 @@ a.rescan-button {
   margin-top: 10px;
 }
 
+/* Scan progress + actions */
+.scan-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+button.secondary {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: var(--bg-sunken);
+}
+
+.scan-progress {
+  margin-top: 12px;
+  max-width: 520px;
+}
+
+.scan-progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.scan-progress-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.scan-progress p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .add-root-form input {
   flex: 1;
 }

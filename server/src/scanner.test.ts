@@ -10,6 +10,8 @@ let filesDir: string;
 let db: typeof import('./db').db;
 let saveConfig: typeof import('./config').saveConfig;
 let runScan: typeof import('./scanner').runScan;
+let getScanProgress: typeof import('./scanner').getScanProgress;
+let pendingReprocessCount: typeof import('./scanner').pendingReprocessCount;
 
 const ONE_PIXEL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -27,7 +29,7 @@ beforeAll(async () => {
 
   ({ db } = await import('./db'));
   ({ saveConfig } = await import('./config'));
-  ({ runScan } = await import('./scanner'));
+  ({ runScan, getScanProgress, pendingReprocessCount } = await import('./scanner'));
 
   saveConfig({ roots: [{ label: 'Test Root', path: filesDir }] });
 });
@@ -545,6 +547,76 @@ describe('runScan', () => {
     expect(db.prepare('SELECT id FROM files WHERE filename = ?').get('via-symlink.stl')).toBeTruthy();
 
     fs.rmSync(path.join(filesDir, 'linked'), { recursive: true, force: true });
+    await runScan();
+  });
+});
+
+describe('scan progress, cancel and reprocess modes', () => {
+  it('exposes progress: idle before, running/processing during, done after', async () => {
+    writeStl('progress-1.stl');
+    writeStl('progress-2.stl');
+
+    expect(getScanProgress().running).toBe(false);
+
+    let sawRunning = false;
+    const scan = runScan();
+    // The scan yields to the loop between files, so a poll here catches it mid-flight.
+    for (let i = 0; i < 50 && !sawRunning; i++) {
+      const p = getScanProgress();
+      if (p.running && p.phase === 'processing') sawRunning = true;
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    const result = await scan;
+
+    expect(sawRunning).toBe(true);
+    expect(result.cancelled).toBe(false);
+    const after = getScanProgress();
+    expect(after.running).toBe(false);
+    expect(after.phase).toBe('done');
+    expect(after.total).toBeGreaterThanOrEqual(2);
+    expect(after.processed).toBe(after.total);
+  });
+
+  it('reprocess-stale re-runs processing on version-behind rows without a filesystem walk', async () => {
+    writeStl('reproc.stl');
+    await runScan();
+    const row = db.prepare("SELECT id FROM files WHERE filename = 'reproc.stl'").get() as { id: number };
+
+    // Simulate a scanner-version bump: knock the row back and null its derived data.
+    db.prepare(
+      'UPDATE files SET scanner_version = 0, content_hash = NULL, geometry_hash = NULL WHERE id = ?'
+    ).run(row.id);
+    expect(pendingReprocessCount()).toBeGreaterThanOrEqual(1);
+
+    const result = await runScan({ mode: 'reprocess-stale' });
+    expect(result.updated).toBeGreaterThanOrEqual(1);
+    expect(result.added).toBe(0);
+    expect(result.missing).toBe(0);
+
+    const reprocessed = db
+      .prepare("SELECT content_hash, scanner_version FROM files WHERE id = ?")
+      .get(row.id) as { content_hash: string | null; scanner_version: number };
+    expect(reprocessed.content_hash).toBeTruthy();
+    expect(pendingReprocessCount()).toBe(0);
+  });
+
+  it('reprocess-stale flags a row whose file vanished, and leaves present ones alone', async () => {
+    writeStl('reproc-gone.stl');
+    writeStl('reproc-stays.stl');
+    await runScan();
+    // Only knock these two back to stale so the assertion is independent of what other tests left.
+    db.prepare(
+      "UPDATE files SET scanner_version = 0 WHERE filename IN ('reproc-gone.stl', 'reproc-stays.stl')"
+    ).run();
+
+    fs.unlinkSync(path.join(filesDir, 'reproc-gone.stl'));
+    const result = await runScan({ mode: 'reprocess-stale' });
+
+    expect((db.prepare("SELECT missing FROM files WHERE filename = 'reproc-gone.stl'").get() as any).missing).toBe(1);
+    expect((db.prepare("SELECT missing FROM files WHERE filename = 'reproc-stays.stl'").get() as any).missing).toBe(0);
+    expect(result.missing).toBeGreaterThanOrEqual(1);
+
+    writeStl('reproc-gone.stl');
     await runScan();
   });
 });

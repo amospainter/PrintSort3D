@@ -12,10 +12,12 @@ Everything else is from reading the code.
 Status column and the per-finding notes. The `slice_info.config` feature from §16.1 was also
 built.
 
-**Update 2026-09-07:** §10, §14 and §15 are now done. §5 still has an open core (a 3MF is
-opened ~4× per scan for geometry — dimensions, geometry-hash ×2, bake — even after the plate
-merge). Remaining open: §5 (geometry re-parse), §4's worker-thread offload, and the §16
-features beyond §16.1.
+**Update 2026-09-07:** §10, §14 and §15 done, then a second pass closed the rest of the
+non-feature findings — §4 (worker-thread pool via `SCAN_WORKERS` + rich `GET /api/scan/status`
+progress + `POST /api/scan/cancel` + `mode: 'reprocess-stale'` resume/backfill), §5 (dimensions
+and the geometry hash now come from the baked mesh — `CURRENT_SCANNER_VERSION` 12), the
+`duplicate_count` correlated subquery (materialized column), and the `/archive-raw` double
+zip open. Only the §16 feature set beyond §16.1 remains.
 
 ---
 
@@ -26,8 +28,8 @@ features beyond §16.1.
 | 1 | No auth + wide-open CORS ⇒ any website can read and rewrite the catalogue | **High** | Security | **Fixed** — opt-in Basic auth, CORS off by default, loopback bind, always-on CSRF guard, `PUT /roots` validation + lock |
 | 2 | `slicerMetadata` is 96% of the list payload and 96% of the DB | **High** | Perf | **Fixed** — list responses use `LIST_QUERY` (no blob); `slicerMetadata` is detail-only |
 | 3 | Viewer never disposes model geometry — GPU memory leaks per file opened | **High** | Bug | **Fixed** — `disposeObject3D` on model replace / unmount |
-| 4 | A scan blocks the event loop and can run concurrently with itself | **High** | Bug/Perf | **Partly** — concurrency mutex + `GET /scan/status` added; worker-thread offload still open |
-| 5 | Each 3MF is opened and parsed ~7× per scan | Medium-High | Perf | **Partly** — plate build-indices + names now share one parse (`computePlateInfo`); geometry is still re-parsed for dimensions, geometry-hash (×2), and the bake |
+| 4 | A scan blocks the event loop and can run concurrently with itself | **High** | Bug/Perf | **Fixed** — mutex + `setImmediate` yield per file + opt-in `SCAN_WORKERS` pool; rich progress, cancel, and `reprocess-stale` resume |
+| 5 | Each 3MF is opened and parsed ~7× per scan | Medium-High | Perf | **Fixed** — plate parse merged (`computePlateInfo`); dimensions + geometry hash now derived from the baked mesh (`scanArtifacts.ts`), so geometry is parsed once |
 | 6 | Search fires one query per keystroke, with no ordering guard | Medium | Perf/Bug | **Fixed** — 250ms debounce + response sequence guard |
 | 7 | `Detail.tsx` fetches race and have no error state | Medium | Bug | **Fixed** — cancellation guards + error view |
 | 8 | An offline root flags its entire library "missing" | Medium | Bug | **Fixed** — `unavailableRootIds` skip |
@@ -36,8 +38,8 @@ features beyond §16.1.
 | 11 | Paint re-applies on every Detail re-render | Medium | Perf | **Fixed** — `filamentColors` memoized |
 | 12 | "Name" sort is descending (Z→A) with no ascending toggle | Low-Med | UX | **Fixed** — `dir` param + per-column default + toggle |
 | 13 | `preserveDrawingBuffer: true` with nothing reading pixels | Low | Perf | **Fixed** — removed |
-| 14 | `resolveFilePath` prefix check, `sanitizeName` collisions, ASCII-STL size ceiling | Low | Robustness | **Fixed** — boundary check, WebP name dedup, `solid`-prefix guard + oversize warning. Archive double-open still open. |
-| 15 | `synchronous=FULL`, no indexes beyond the two hash ones | Low-Med | Perf | **Fixed** — `synchronous=NORMAL` + `foreign_keys=ON` + 6 sort/filter indexes. `duplicate_count` per-row subquery still open. |
+| 14 | `resolveFilePath` prefix check, `sanitizeName` collisions, ASCII-STL size ceiling, `/archive-raw` double open | Low | Robustness | **Fixed** — boundary check, WebP name dedup, `solid`-prefix guard + oversize warning, `readArchiveModelEntry` opens the zip once |
+| 15 | `synchronous=FULL`, no indexes beyond the two hash ones, `duplicate_count` per-row subquery | Low-Med | Perf | **Fixed** — `synchronous=NORMAL` + `foreign_keys=ON` + 7 indexes; `duplicate_count` is a materialized column refreshed at scan end / on delete |
 | 16.1 | Print time / filament / cost from `slice_info.config` | — | Feature | **Built** — parsed, stored, Detail section + card badges + sort |
 
 ---

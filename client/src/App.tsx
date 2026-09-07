@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Routes, Route, Link, useLocation, useSearchParams } from 'react-router-dom';
 import Library from './pages/Library';
 import Detail from './pages/Detail';
 import Settings from './pages/Settings';
 import ThemeToggle from './ThemeToggle';
 import { api, type FolderEntry, type RootConfig } from './api';
+import { useScanStatus } from './useScanStatus';
 import {
   ChevronDownIcon,
   GridIcon,
@@ -187,6 +188,7 @@ export default function App() {
   // Label of the single source currently being rescanned, or null. Distinct from `scanning`
   // (the whole-library pass) so only the row being scanned shows a spinner.
   const [scanningRoot, setScanningRoot] = useState<string | null>(null);
+  const { status: scanStatus, refresh: refreshScan } = useScanStatus();
 
   const refreshSidebar = () => {
     api.getRoots().then(setRoots);
@@ -196,6 +198,14 @@ export default function App() {
   };
 
   useEffect(refreshSidebar, [location.pathname]);
+
+  // Refresh sidebar counts when a scan (started here or anywhere) finishes.
+  const wasScanning = useRef(false);
+  useEffect(() => {
+    if (wasScanning.current && !scanStatus.scanning) refreshSidebar();
+    wasScanning.current = scanStatus.scanning;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanStatus.scanning]);
 
   const foldersByRoot = useMemo(() => {
     const map = new Map<string, FolderEntry[]>();
@@ -207,17 +217,19 @@ export default function App() {
     return map;
   }, [folders]);
 
-  const busy = scanning || scanningRoot !== null;
+  const busy = scanning || scanningRoot !== null || scanStatus.scanning;
 
   const runScan = (root?: string) => {
     if (root) setScanningRoot(root);
     else setScanning(true);
+    setTimeout(refreshScan, 100);
     api
       .scan(root)
       .then(refreshSidebar)
       .finally(() => {
         setScanning(false);
         setScanningRoot(null);
+        refreshScan();
       });
   };
 

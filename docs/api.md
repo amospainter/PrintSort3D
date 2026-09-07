@@ -164,21 +164,53 @@ positive values (mm). Returns the saved settings, or `400` if `x`/`y` aren't pos
 
 ## `POST /api/scan`
 
-Triggers a rescan. With no body (or `{}`), scans every folder in `config.json` (via `roots`). With `{ "root": "<label>" }`, scans only that one watched folder — the walk, new/changed detection, and the missing-flag pass are all scoped to that root, so other roots' rows are untouched; `404` if no configured root has that label. Returns:
+Triggers a rescan. Body (all optional):
 
 ```ts
-{ added: number, updated: number, missing: number }
+{ root?: string, mode?: "scan" | "reprocess-stale" | "reprocess-all" }
 ```
 
-`missing` is the count of files flagged missing this pass (not found on disk within their configured root), not a running total. A root whose path is unreachable (unplugged drive, unmounted share) is skipped entirely — its rows are left as-is, not flagged missing.
+- `root` — scope the pass to one watched folder (`404` if no configured root has that label).
+- `mode` — `"scan"` (default) walks the filesystem: add new files, reprocess changed or
+  version-behind rows, flag files gone from disk. `"reprocess-stale"` skips the walk and the
+  missing-flag pass entirely, re-running scan-time processing only on rows whose
+  `scanner_version` is behind (the "resume an interrupted scan" / "backfill after an upgrade"
+  case — much faster when nothing on disk changed). `"reprocess-all"` does the same for every
+  non-missing row.
+
+Returns `{ added, updated, missing, cancelled }`. `missing` is this pass's count, not a
+running total. A root whose path is unreachable (unplugged drive, unmounted share) is skipped
+— its rows are left as-is. Only one scan runs at a time; calling this mid-scan returns that
+scan's result.
 
 Only one scan runs at a time: calling this while a scan is in progress returns that scan's result rather than starting a second. `403` when `PRINTSORT_READONLY` is set.
 
 ## `GET /api/scan/status`
 
-`{ scanning: boolean }` — whether a scan is currently running.
+```ts
+{
+  scanning: boolean,
+  progress: {
+    running, phase, mode, rootLabel,
+    total, processed, added, updated, missing,
+    currentFile, startedAt, finishedAt, error
+  },
+  pendingReprocess: number   // rows a plain rescan would reprocess (behind on scanner_version)
+}
+```
 
-Async and can take a while on a large library — for each new or changed `.3mf` file, it also converts every embedded image to WebP (via `sharp`) before the response resolves.
+`phase` is one of `idle`, `walking`, `processing`, `flagging-missing`, `finalizing`, `done`,
+`cancelled`, `error`. `progress` persists after a scan finishes so the client can show the
+final counts. Poll this while `scanning` is true for a progress bar.
+
+## `POST /api/scan/cancel`
+
+Asks the running scan to stop after the current file. `{ cancelling: boolean }` — `false` if
+nothing was running. A cancelled scan is resumable: re-run `POST /api/scan` (the default mode
+skips already-processed files) or use `mode: "reprocess-stale"`.
+
+Scans are async and can take a while on a large library — set `SCAN_WORKERS=<n>` to spread
+the per-file work across worker threads.
 
 ## `POST /api/files/:id/rescan`
 

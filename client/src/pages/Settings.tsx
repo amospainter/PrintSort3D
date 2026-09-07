@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, type RootConfig, type ScanResult, type TagInfo, type PlateSize } from '../api';
+import { api, type RootConfig, type ScanResult, type ScanMode, type TagInfo, type PlateSize } from '../api';
 import { TAG_COLOR_PRESETS, resolveTagColor, tagChipStyle } from '../tagColors';
+import { useScanStatus } from '../useScanStatus';
 
 export default function Settings() {
   const [roots, setRoots] = useState<RootConfig[]>([]);
@@ -17,6 +18,8 @@ export default function Settings() {
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [missingCount, setMissingCount] = useState(0);
   const [purging, setPurging] = useState(false);
+  const { status: scanStatus, refresh: refreshScan } = useScanStatus();
+  const [cancelling, setCancelling] = useState(false);
 
   const reload = () => api.getRoots().then(setRoots);
   const reloadTags = () => api.listTags().then(setTags);
@@ -45,12 +48,15 @@ export default function Settings() {
     api.setRoots(updated).then(setRoots);
   };
 
-  const scan = (root?: string) => {
+  const scan = (root?: string, mode?: ScanMode) => {
     if (root) setScanningRoot(root);
     else setScanning(true);
     setScanResult(null);
+    setCancelling(false);
+    // Kick a status poll immediately so the progress bar appears without the 15s idle delay.
+    setTimeout(refreshScan, 100);
     api
-      .scan(root)
+      .scan(root, mode)
       .then((r) => {
         setScanResult(r);
         reloadMissing();
@@ -58,7 +64,13 @@ export default function Settings() {
       .finally(() => {
         setScanning(false);
         setScanningRoot(null);
+        refreshScan();
       });
+  };
+
+  const cancelScan = () => {
+    setCancelling(true);
+    api.cancelScan().finally(refreshScan);
   };
 
   const purgeMissing = () => {
@@ -71,7 +83,7 @@ export default function Settings() {
       .finally(() => setPurging(false));
   };
 
-  const scanBusy = scanning || scanningRoot !== null;
+  const scanBusy = scanning || scanningRoot !== null || scanStatus.scanning;
 
   const savePlateSize = () => {
     setPlateSaved(null);
@@ -233,12 +245,60 @@ export default function Settings() {
       <section>
         <h3>Scan</h3>
         <p className="muted">Scans every watched folder. Use the Rescan button next to a folder above to scan just that one.</p>
-        <button disabled={scanBusy} onClick={() => scan()}>
-          {scanning ? 'Scanning...' : 'Rescan all'}
-        </button>
-        {scanResult && (
+        <div className="scan-actions">
+          <button disabled={scanBusy || scanStatus.scanning} onClick={() => scan()}>
+            {scanStatus.scanning ? 'Scanning…' : 'Rescan all'}
+          </button>
+          {scanStatus.scanning && (
+            <button className="secondary" disabled={cancelling} onClick={cancelScan}>
+              {cancelling ? 'Stopping…' : 'Cancel'}
+            </button>
+          )}
+        </div>
+
+        {scanStatus.scanning && (
+          <div className="scan-progress" aria-live="polite">
+            <div className="scan-progress-bar">
+              <span
+                style={{
+                  width:
+                    scanStatus.progress.total > 0
+                      ? `${Math.round((scanStatus.progress.processed / scanStatus.progress.total) * 100)}%`
+                      : '0%',
+                }}
+              />
+            </div>
+            <p className="muted">
+              {scanStatus.progress.phase === 'walking'
+                ? 'Finding files…'
+                : scanStatus.progress.phase === 'flagging-missing'
+                  ? 'Checking for removed files…'
+                  : scanStatus.progress.phase === 'finalizing'
+                    ? 'Finalizing…'
+                    : `${scanStatus.progress.processed} / ${scanStatus.progress.total}`}
+              {scanStatus.progress.currentFile ? ` · ${scanStatus.progress.currentFile}` : ''}
+              {scanStatus.progress.added || scanStatus.progress.updated
+                ? ` · +${scanStatus.progress.added} new, ${scanStatus.progress.updated} updated`
+                : ''}
+            </p>
+          </div>
+        )}
+
+        {!scanStatus.scanning && scanResult && (
           <p>
+            {scanResult.cancelled ? 'Scan cancelled — ' : ''}
             Added: {scanResult.added}, Updated: {scanResult.updated}, Missing: {scanResult.missing}
+          </p>
+        )}
+
+        {!scanStatus.scanning && scanStatus.pendingReprocess > 0 && (
+          <p className="muted">
+            {scanStatus.pendingReprocess} file{scanStatus.pendingReprocess === 1 ? '' : 's'} need a
+            metadata update (new scan-time processing available).{' '}
+            <button className="linklike" onClick={() => scan(undefined, 'reprocess-stale')}>
+              Update now
+            </button>{' '}
+            — no folder walk, just reprocesses those files.
           </p>
         )}
       </section>

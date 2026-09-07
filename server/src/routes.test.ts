@@ -688,4 +688,26 @@ describe('scan route scoping', () => {
 
     await request(app).put('/api/roots').send([{ label: 'Test Root', path: filesDir }]);
   });
+
+  it('GET /api/scan/status reports progress shape and pendingReprocess; rejects a bad mode', async () => {
+    const status = await request(app).get('/api/scan/status');
+    expect(status.status).toBe(200);
+    expect(status.body).toMatchObject({ scanning: false });
+    expect(status.body.progress).toMatchObject({ phase: expect.any(String), total: expect.any(Number) });
+    expect(typeof status.body.pendingReprocess).toBe('number');
+
+    const bad = await request(app).post('/api/scan').send({ mode: 'nonsense' });
+    expect(bad.status).toBe(400);
+  });
+
+  it('reprocess-stale mode runs without a walk and returns a cancelled flag', async () => {
+    const res = await request(app).post('/api/scan').send({ mode: 'reprocess-stale' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ added: 0, cancelled: false });
+
+    // Cancel with no scan running is a harmless no-op.
+    const cancel = await request(app).post('/api/scan/cancel');
+    expect(cancel.status).toBe(200);
+    expect(cancel.body).toEqual({ cancelling: false });
+  });
 });

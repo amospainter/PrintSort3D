@@ -49,6 +49,7 @@ can still add extra folders by hand in Settings — those persist to `/data/conf
 | `PRINTSORT_MODELS_DIR` | `/models` | Each immediate subdirectory becomes a watched source. Set empty to disable auto-discovery. |
 | `PRINTSORT_ROOTS` | *(unset)* | Explicit list, `;`- or newline-separated, each entry `Label=/path` or just `/path`. Combined with the above. |
 | `SCAN_ON_STARTUP` | `true` | Scan every source once when the server starts. Set `false` to only scan from the UI. |
+| `SCAN_WORKERS` | *(unset → 0)* | Number of worker threads for the CPU-bound scan work (mesh baking, thumbnail rendering, hashing). `0` runs it inline on the main thread. Set to roughly your core count to speed up the first scan of a large library. |
 | `HOST` | `0.0.0.0` (in image) | Interface the server binds. The image binds all interfaces so the published port works; how exposed that actually is depends on your `ports:` / `-p` mapping. |
 
 ### Access control
@@ -70,7 +71,8 @@ A cross-origin CSRF guard is always on. See [api.md](api.md#access-control).
 
 A starter [`docker-compose.yml`](../docker-compose.yml) is in the repo root. It pulls the
 published image `ghcr.io/amospainter/printsort3d:latest` and mounts one folder via
-`MODELS_DIR`; add more `- host:/models/<name>:ro` lines for additional sources.
+`MODELS_DIR`; add more `- host:/models/<name>:ro` lines for additional sources. The `/data`
+volume is `DATA_DIR` (defaults to `./data`).
 
 ```sh
 MODELS_DIR=/srv/3d-prints docker compose up -d
@@ -144,8 +146,9 @@ echo "$GITHUB_PAT" | docker login ghcr.io -u amospainter --password-stdin
 - **Upgrading:** `docker compose pull && docker compose up -d` (or `up -d --build` for a
   local build). Schema migrations in `db.ts` run on startup; the `/data` volume carries your
   catalog across versions.
-- **Thumbnails for STL/OBJ** are still rendered in your browser (WebGL) the first time you
-  view those files in the library, then cached under `/data`. This is unchanged by Docker.
+- **Thumbnails are generated server-side during the scan** — a CPU-only software rasterizer
+  for `.stl` / `.obj` / non-Bambu `.3mf`, the embedded plate image for Bambu `.3mf`. No GPU or
+  WebGL is needed in the container; each thumbnail is cached at `/data/assets/<id>/thumbnail.png`.
 - **`/data` permissions are handled for you.** The container starts as root only long enough
   for its entrypoint to `chown` `/data` to the unprivileged `node` user (UID 1000), then
   drops to that user via `gosu` to run the server — so a bind mount owned by root on the host

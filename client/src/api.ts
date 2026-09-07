@@ -117,6 +117,31 @@ export interface ScanResult {
   added: number;
   updated: number;
   missing: number;
+  cancelled: boolean;
+}
+
+export type ScanMode = 'scan' | 'reprocess-stale' | 'reprocess-all';
+
+export interface ScanProgress {
+  running: boolean;
+  phase: 'idle' | 'walking' | 'processing' | 'flagging-missing' | 'finalizing' | 'done' | 'cancelled' | 'error';
+  mode: ScanMode;
+  rootLabel: string | null;
+  total: number;
+  processed: number;
+  added: number;
+  updated: number;
+  missing: number;
+  currentFile: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  error: string | null;
+}
+
+export interface ScanStatus {
+  scanning: boolean;
+  progress: ScanProgress;
+  pendingReprocess: number;
 }
 
 export interface FilesPage {
@@ -209,14 +234,15 @@ export const api = {
   updateSettings(patch: Partial<AppSettings> & { defaultPlateSize: PlateSize }) {
     return request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
   },
-  scan(root?: string) {
-    return request<ScanResult>('/api/scan', {
-      method: 'POST',
-      body: root ? JSON.stringify({ root }) : undefined,
-    });
+  scan(root?: string, mode?: ScanMode) {
+    const body = root || mode ? JSON.stringify({ ...(root ? { root } : {}), ...(mode ? { mode } : {}) }) : undefined;
+    return request<ScanResult>('/api/scan', { method: 'POST', body });
+  },
+  cancelScan() {
+    return request<{ cancelling: boolean }>('/api/scan/cancel', { method: 'POST' });
   },
   getScanStatus() {
-    return request<{ scanning: boolean }>('/api/scan/status');
+    return request<ScanStatus>('/api/scan/status');
   },
   getRoots() {
     return request<RootConfig[]>('/api/roots');

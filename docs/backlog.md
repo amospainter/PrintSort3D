@@ -4,15 +4,14 @@ Items intentionally scoped out, with enough context to pick them up later. Not a
 prioritized roadmap; move an entry into a PR when it's actually being done and delete it
 from here.
 
-See also [expert_review_0906.md](expert_review_0906.md) — most of its findings are fixed (as
-of 2026-09-07: §10 purge-missing, §14 path/parse robustness, §15 DB tuning all done). Still
-open: §5 (geometry is still re-parsed for dimensions + geometry-hash ×2 + the bake — feed all
-three from one parse of the baked parts; needs a `CURRENT_SCANNER_VERSION` bump and a look at
-whether the 3MF transform-applied vs local-vertex distinction matters for duplicate hashing),
-§4's worker-thread scan offload, the `duplicate_count` per-row correlated subquery, the
-`/api/files/:id/archive-raw` double zip open, and the rest of §16 (model grouping, source
-URL/licence, printer profiles + fit check, mesh health, print history, more formats, FTS
-search, duplicate resolution, tag export/sidecars, scan progress, painted thumbnails,
+See also [expert_review_0906.md](expert_review_0906.md) — nearly everything from it is now
+done (as of 2026-09-07: §4 worker pool + scan progress/cancel/resume, §5 geometry re-parse,
+§10 purge-missing, §14 path/parse robustness, §15 DB tuning incl. materialized
+`duplicate_count`, `/archive-raw` single-open). Still open: the `duplicatesOnly` filter path
+(now `f.duplicate_count > 0`, indexed — fine, but the whole-table `recomputeDuplicateCounts`
+at scan end is O(n·log n) and could be scoped to touched hash-mates), and the §16 feature set
+(model grouping, source URL/licence, printer profiles + fit check, mesh health, print history,
+more formats, FTS search, duplicate resolution, tag export/sidecars, painted thumbnails,
 light-theme viewer).
 
 ---
