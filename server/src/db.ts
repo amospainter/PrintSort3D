@@ -108,15 +108,26 @@ for (const [column, sql] of migrations) {
 // list endpoint used to run (a full `files` scan for every row returned). It's recomputed at
 // the end of every scan and on delete/purge (see RECOMPUTE_DUPLICATE_COUNTS_SQL); backfill it
 // once here so an upgraded DB is correct before its first rescan.
-export const RECOMPUTE_DUPLICATE_COUNTS_SQL = `
-  UPDATE files SET duplicate_count = (
+const DUPLICATE_COUNT_SUBQUERY = `(
     SELECT COUNT(*) FROM files f2
     WHERE f2.id != files.id AND (
       (files.content_hash IS NOT NULL AND f2.content_hash = files.content_hash) OR
       (files.geometry_hash IS NOT NULL AND f2.geometry_hash = files.geometry_hash)
     )
-  )
+  )`;
+
+export const RECOMPUTE_DUPLICATE_COUNTS_SQL = `UPDATE files SET duplicate_count = ${DUPLICATE_COUNT_SUBQUERY}`;
+
+// Scoped variant: only recompute rows whose content_hash or geometry_hash is in the supplied
+// JSON arrays (params: content-hash JSON, geometry-hash JSON). After a scan touches a handful
+// of files, only those files and their hash-mates can have a stale count — this avoids the
+// whole-table pass. Empty arrays make it a no-op.
+export const RECOMPUTE_DUPLICATE_COUNTS_SCOPED_SQL = `
+  UPDATE files SET duplicate_count = ${DUPLICATE_COUNT_SUBQUERY}
+  WHERE files.content_hash IN (SELECT value FROM json_each(?))
+     OR files.geometry_hash IN (SELECT value FROM json_each(?))
 `;
+
 if (addedDuplicateCount) db.exec(RECOMPUTE_DUPLICATE_COUNTS_SQL);
 
 // Same guarded-ALTER pattern for the `tags` table (the loop above only covers `files`).

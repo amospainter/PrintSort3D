@@ -540,6 +540,29 @@ describe('duplicate detection routes', () => {
     const res = await request(app).get('/api/files?query=sized');
     expect(res.body.items[0].duplicateCount).toBe(0);
   });
+
+  it('keeps duplicate_count consistent as a hash-mate is added then removed (scoped recompute)', async () => {
+    // Two identical files already exist (dup-a / dup-b) each at count 1.
+    fs.writeFileSync(path.join(filesDir, 'dup-c.stl'), 'solid dup\nendsolid dup\n');
+    await runScan();
+
+    const after = (await request(app).get('/api/files?query=dup-&pageSize=200')).body.items;
+    const byName = Object.fromEntries(after.map((f: any) => [f.filename, f]));
+    // Adding dup-c must bump the *existing* files' counts too, not just give dup-c its own.
+    expect(byName['dup-a.stl'].duplicateCount).toBe(2);
+    expect(byName['dup-b.stl'].duplicateCount).toBe(2);
+    expect(byName['dup-c.stl'].duplicateCount).toBe(2);
+
+    // Remove dup-c from disk + purge it; the other two drop back to 1.
+    fs.unlinkSync(path.join(filesDir, 'dup-c.stl'));
+    await runScan();
+    await request(app).delete(`/api/files/${byName['dup-c.stl'].id}`);
+
+    const final = (await request(app).get('/api/files?query=dup-&pageSize=200')).body.items;
+    const finalByName = Object.fromEntries(final.map((f: any) => [f.filename, f]));
+    expect(finalByName['dup-a.stl'].duplicateCount).toBe(1);
+    expect(finalByName['dup-b.stl'].duplicateCount).toBe(1);
+  });
 });
 
 describe('archive routes', () => {

@@ -7,7 +7,8 @@ import {
   runScan,
   rescanFile,
   isScanning,
-  recomputeDuplicateCounts,
+  recomputeDuplicateCountsFor,
+  newTouchedHashes,
   getScanProgress,
   requestScanCancel,
   pendingReprocessCount,
@@ -299,15 +300,22 @@ router.get('/files/:id', (req, res) => {
 // scopes it; otherwise every missing file across every root. Returns { removed: number }.
 router.post('/files/purge-missing', (req, res) => {
   const rootLabel = (req.query.root as string | undefined) ?? (req.body as { root?: string } | undefined)?.root;
-  let rows: { id: number }[];
+  let rows: { id: number; content_hash: string | null; geometry_hash: string | null }[];
   if (rootLabel) {
     rows = db
       .prepare(
-        'SELECT f.id FROM files f JOIN roots r ON r.id = f.root_id WHERE f.missing = 1 AND r.label = ?'
+        'SELECT f.id, f.content_hash, f.geometry_hash FROM files f JOIN roots r ON r.id = f.root_id WHERE f.missing = 1 AND r.label = ?'
       )
-      .all(rootLabel) as { id: number }[];
+      .all(rootLabel) as typeof rows;
   } else {
-    rows = db.prepare('SELECT id FROM files WHERE missing = 1').all() as { id: number }[];
+    rows = db
+      .prepare('SELECT id, content_hash, geometry_hash FROM files WHERE missing = 1')
+      .all() as typeof rows;
+  }
+  const touched = newTouchedHashes();
+  for (const r of rows) {
+    if (r.content_hash) touched.content.add(r.content_hash);
+    if (r.geometry_hash) touched.geometry.add(r.geometry_hash);
   }
 
   try {
@@ -331,7 +339,7 @@ router.post('/files/purge-missing', (req, res) => {
   // already gone from the DB with a leftover asset dir is harmless (the startup prune and
   // the next purge both mop it up).
   for (const { id } of rows) deleteCachedImages(id);
-  if (rows.length > 0) recomputeDuplicateCounts(); // removed files may have been someone's duplicate
+  if (rows.length > 0) recomputeDuplicateCountsFor(touched); // removed files may have been someone's duplicate
 
   res.json({ removed: rows.length });
 });
@@ -341,7 +349,9 @@ router.post('/files/purge-missing', (req, res) => {
 router.delete('/files/:id', (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid id' });
-  const row = db.prepare('SELECT missing FROM files WHERE id = ?').get(id) as { missing: number } | undefined;
+  const row = db.prepare('SELECT missing, content_hash, geometry_hash FROM files WHERE id = ?').get(id) as
+    | { missing: number; content_hash: string | null; geometry_hash: string | null }
+    | undefined;
   if (!row) return res.status(404).json({ error: 'not found' });
   if (!row.missing) {
     return res.status(409).json({ error: 'file is present on disk; only missing files can be removed from the catalogue' });
@@ -361,7 +371,10 @@ router.delete('/files/:id', (req, res) => {
     return res.status(500).json({ error: 'delete failed', message: err instanceof Error ? err.message : String(err) });
   }
   deleteCachedImages(id);
-  recomputeDuplicateCounts();
+  const touched = newTouchedHashes();
+  if (row.content_hash) touched.content.add(row.content_hash);
+  if (row.geometry_hash) touched.geometry.add(row.geometry_hash);
+  recomputeDuplicateCountsFor(touched);
   res.json({ ok: true });
 });
 

@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { db, RECOMPUTE_DUPLICATE_COUNTS_SQL } from './db';
+import { db, RECOMPUTE_DUPLICATE_COUNTS_SQL, RECOMPUTE_DUPLICATE_COUNTS_SCOPED_SQL } from './db';
 import { loadConfig } from './config';
 import { THUMBNAIL_FILENAME } from './assets';
 import { extractArtifactsPooled } from './scanPool';
@@ -127,16 +127,66 @@ function writeArtifacts(fileId: number, a: FileArtifacts): void {
   }
 }
 
-async function processFile(fileId: number, fullPath: string, ext: string): Promise<void> {
-  const artifacts = await extractArtifactsPooled(fileId, fullPath, ext);
-  writeArtifacts(fileId, artifacts);
+// The content/geometry hashes touched during a scan — every value a changed file *had*
+// (before reprocessing) and *has* (after). Only files whose hash is in here can have a stale
+// `duplicate_count`, so the end-of-scan recompute is scoped to these rather than the whole table.
+export interface TouchedHashes {
+  content: Set<string>;
+  geometry: Set<string>;
 }
 
-// Materialized-column maintenance for `files.duplicate_count`. Cheap even for a large catalog
-// (the hash indexes make each correlated count O(log n + matches)), and it only runs at the
-// end of a scan and on delete/purge — never per request.
+export function newTouchedHashes(): TouchedHashes {
+  return { content: new Set(), geometry: new Set() };
+}
+
+function noteHashes(row: { content_hash?: string | null; geometry_hash?: string | null } | undefined, into: TouchedHashes): void {
+  if (row?.content_hash) into.content.add(row.content_hash);
+  if (row?.geometry_hash) into.geometry.add(row.geometry_hash);
+}
+
+async function processFile(
+  fileId: number,
+  fullPath: string,
+  ext: string,
+  touched?: TouchedHashes
+): Promise<void> {
+  if (touched) {
+    noteHashes(
+      db.prepare('SELECT content_hash, geometry_hash FROM files WHERE id = ?').get(fileId) as
+        | { content_hash: string | null; geometry_hash: string | null }
+        | undefined,
+      touched
+    );
+  }
+  const artifacts = await extractArtifactsPooled(fileId, fullPath, ext);
+  writeArtifacts(fileId, artifacts);
+  if (touched) {
+    if (artifacts.contentHash) touched.content.add(artifacts.contentHash);
+    if (artifacts.geometryHash) touched.geometry.add(artifacts.geometryHash);
+  }
+}
+
+// Materialized-column maintenance for `files.duplicate_count`. The hash indexes make each
+// correlated count O(log n + matches); this still only runs at the end of a scan and on
+// delete/purge — never per request.
 export function recomputeDuplicateCounts(): void {
   db.exec(RECOMPUTE_DUPLICATE_COUNTS_SQL);
+}
+
+// Scoped recompute: just the files sharing a hash with something the scan (or a delete)
+// touched. Falls back to the whole-table pass when so many hashes were touched that scoping
+// buys nothing (a full backfill / large reprocess).
+export function recomputeDuplicateCountsFor(touched: TouchedHashes): void {
+  const total = touched.content.size + touched.geometry.size;
+  if (total === 0) return;
+  if (total > 1500) {
+    recomputeDuplicateCounts();
+    return;
+  }
+  db.prepare(RECOMPUTE_DUPLICATE_COUNTS_SCOPED_SQL).run(
+    JSON.stringify([...touched.content]),
+    JSON.stringify([...touched.geometry])
+  );
 }
 
 // Count of rows that a plain rescan would reprocess (behind on scan-time processing). The UI
@@ -175,8 +225,9 @@ export async function rescanFile(fileId: number): Promise<RescanStatus> {
     fileId
   );
 
-  await processFile(fileId, fullPath, ext);
-  recomputeDuplicateCounts(); // this file's hashes may have changed, shifting others' counts
+  const touched = newTouchedHashes();
+  await processFile(fileId, fullPath, ext, touched);
+  recomputeDuplicateCountsFor(touched); // this file's hashes may have shifted others' counts
   return 'ok';
 }
 
@@ -302,6 +353,7 @@ async function walkScan(rootLabel: string | undefined): Promise<ScanResult> {
     rootLabel != null ? config.roots.filter((r) => r.label === rootLabel) : config.roots;
   const result: ScanResult = { added: 0, updated: 0, missing: 0, cancelled: false };
   const seenFileIds = new Set<number>();
+  const touched = newTouchedHashes();
   // Roots whose path is currently unreachable (unplugged drive, offline NAS, Docker mount not
   // yet up). Their catalogued rows are left exactly as they are — flagging a whole library
   // `missing` because a drive is temporarily absent, then un-flagging on the next scan, is
@@ -369,7 +421,7 @@ async function walkScan(rootLabel: string | undefined): Promise<ScanResult> {
           }
 
           if (mtimeChanged || needsBackfill) {
-            await processFile(existing.id, fullPath, ext);
+            await processFile(existing.id, fullPath, ext, touched);
             result.updated++;
             progress = { ...progress, updated: result.updated };
           }
@@ -385,7 +437,7 @@ async function walkScan(rootLabel: string | undefined): Promise<ScanResult> {
           result.added++;
           progress = { ...progress, added: result.added };
 
-          await processFile(fileId, fullPath, ext);
+          await processFile(fileId, fullPath, ext, touched);
         }
       } catch (err) {
         // A single corrupt/unreadable file shouldn't abort the scan for every other file.
@@ -420,7 +472,7 @@ async function walkScan(rootLabel: string | undefined): Promise<ScanResult> {
   }
 
   progress = { ...progress, phase: 'finalizing', currentFile: null };
-  recomputeDuplicateCounts();
+  recomputeDuplicateCountsFor(touched);
   return result;
 }
 
@@ -455,6 +507,7 @@ async function reprocessScan(
     .all(...params) as { id: number; rel: string; ext: string; rootPath: string }[];
 
   progress = { ...progress, phase: 'processing', total: rows.length };
+  const touched = newTouchedHashes();
 
   for (const row of rows) {
     if (cancelRequested) {
@@ -472,7 +525,7 @@ async function reprocessScan(
         progress = { ...progress, missing: result.missing };
         continue;
       }
-      await processFile(row.id, fullPath, row.ext.toLowerCase());
+      await processFile(row.id, fullPath, row.ext.toLowerCase(), touched);
       result.updated++;
       progress = { ...progress, updated: result.updated };
     } catch (err) {
@@ -482,7 +535,7 @@ async function reprocessScan(
   }
 
   progress = { ...progress, phase: 'finalizing', currentFile: null };
-  recomputeDuplicateCounts();
+  recomputeDuplicateCountsFor(touched);
   return result;
 }
 
