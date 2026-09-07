@@ -27,6 +27,14 @@ export function GridIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function MenuIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base(props)}>
+      <path d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+  );
+}
+
 export function CopyIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base(props)}>

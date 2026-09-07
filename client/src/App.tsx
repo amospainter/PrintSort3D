@@ -15,7 +15,11 @@ import {
   PlusIcon,
   RefreshIcon,
   AlertIcon,
+  MenuIcon,
 } from './Icons';
+
+const MOBILE_QUERY = '(max-width: 860px)';
+const isMobile = () => typeof window !== 'undefined' && window.matchMedia(MOBILE_QUERY).matches;
 
 interface FolderNode {
   name: string;
@@ -190,6 +194,29 @@ export default function App() {
   const [scanningRoot, setScanningRoot] = useState<string | null>(null);
   const { status: scanStatus, refresh: refreshScan } = useScanStatus();
 
+  // Sidebar: a persistent column on desktop (collapsible, preference stored per browser) and
+  // an off-canvas drawer on mobile (starts closed, closes on navigation / backdrop / Esc).
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (isMobile()) return false;
+    try {
+      return localStorage.getItem('printsort3d-sidebar') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const toggleSidebar = () =>
+    setSidebarOpen((open) => {
+      const next = !open;
+      if (!isMobile()) {
+        try {
+          localStorage.setItem('printsort3d-sidebar', next ? '1' : '0');
+        } catch {
+          /* private mode */
+        }
+      }
+      return next;
+    });
+
   const refreshSidebar = () => {
     api.getRoots().then(setRoots);
     api.listFolders().then(setFolders);
@@ -198,6 +225,19 @@ export default function App() {
   };
 
   useEffect(refreshSidebar, [location.pathname]);
+
+  // Close the mobile drawer whenever navigation happens (tapping a source link, a card, etc.).
+  useEffect(() => {
+    if (isMobile()) setSidebarOpen(false);
+  }, [location.pathname, location.search]);
+
+  // Esc closes the mobile drawer.
+  useEffect(() => {
+    if (!sidebarOpen || !isMobile()) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setSidebarOpen(false);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sidebarOpen]);
 
   // Refresh sidebar counts when a scan (started here or anywhere) finishes.
   const wasScanning = useRef(false);
@@ -241,13 +281,30 @@ export default function App() {
   const isAllModelsView = onLibrary && !isDuplicatesView && !isMissingView && !activeRoot;
 
   return (
-    <div className="app">
-      <aside className="sidebar">
+    <div className={`app-shell${sidebarOpen ? ' sidebar-open' : ''}`}>
+      <header className="topbar">
+        <button
+          type="button"
+          className="topbar-toggle"
+          aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+          aria-expanded={sidebarOpen}
+          onClick={toggleSidebar}
+        >
+          <MenuIcon />
+        </button>
         <Link to="/" className="brand">
           <span className="brand-mark">🖨️</span> PrintSort3D
         </Link>
+      </header>
 
-        <nav className="sidebar-nav">
+      <div className="app">
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+        <aside className="sidebar">
+          <nav className="sidebar-nav">
           <SidebarLink to="/" active={isAllModelsView} icon={<GridIcon />}>
             All models
           </SidebarLink>
@@ -323,16 +380,17 @@ export default function App() {
             Settings
           </SidebarLink>
         </div>
-      </aside>
+        </aside>
 
-      <div className="app-content">
-        <main>
-          <Routes>
-            <Route path="/" element={<Library />} />
-            <Route path="/files/:id" element={<Detail />} />
-            <Route path="/settings" element={<Settings />} />
-          </Routes>
-        </main>
+        <div className="app-content">
+          <main>
+            <Routes>
+              <Route path="/" element={<Library />} />
+              <Route path="/files/:id" element={<Detail />} />
+              <Route path="/settings" element={<Settings />} />
+            </Routes>
+          </main>
+        </div>
       </div>
     </div>
   );

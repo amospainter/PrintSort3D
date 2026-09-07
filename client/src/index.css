@@ -103,12 +103,51 @@ a {
   color: var(--accent);
 }
 
-/* ---------- App shell: persistent left sidebar + content ---------- */
+/* ---------- App shell: top bar + (collapsible) left sidebar + content ---------- */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 48px;
+  flex-shrink: 0;
+  padding: 0 10px;
+  background: var(--sidebar-bg);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 65;
+}
+
+.topbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
+
+.topbar-toggle:hover {
+  background: var(--bg-sunken);
+  color: var(--text);
+}
 
 .app {
   display: flex;
-  min-height: 100vh;
-  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+  position: relative;
 }
 
 .sidebar {
@@ -120,9 +159,25 @@ a {
   flex-direction: column;
   padding: 16px 12px;
   position: sticky;
-  top: 0;
-  height: 100vh;
+  top: 48px;
+  height: calc(100vh - 48px);
   overflow-y: auto;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
+/* Desktop: collapse the sidebar to zero width; content reflows to fill the space. */
+@media (min-width: 861px) {
+  .app-shell:not(.sidebar-open) .sidebar {
+    width: 0;
+    min-width: 0;
+    padding-left: 0;
+    padding-right: 0;
+    border-right: none;
+    overflow: hidden;
+  }
 }
 
 .brand {
@@ -130,14 +185,14 @@ a {
   align-items: center;
   gap: 8px;
   font-weight: 700;
-  font-size: 15px;
+  font-size: 14px;
   color: var(--text);
   text-decoration: none;
-  padding: 4px 8px 16px;
+  white-space: nowrap;
 }
 
 .brand-mark {
-  font-size: 18px;
+  font-size: 17px;
 }
 
 .sidebar-nav {
@@ -1567,4 +1622,181 @@ button.linklike {
 .bulk-bar .tag-input {
   min-width: 220px;
   flex: 1;
+}
+
+/* Horizontal-scroll wrapper for wide tables (Settings + Library table view) so they never
+   force the page to scroll sideways on a narrow screen. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ---------- Touch / no-hover devices ---------- */
+@media (hover: none) {
+  /* Hover-revealed affordances need to be always visible where there's no hover. */
+  .sidebar-source-rescan {
+    opacity: 1;
+  }
+
+  /* The mouse-gesture hint ("Right-drag to pan…") doesn't apply to touch. */
+  .viewer-hint-gestures {
+    display: none;
+  }
+}
+
+/* ---------- Mobile / narrow layout ---------- */
+@media (max-width: 860px) {
+  /* Sidebar becomes an off-canvas drawer that sits below the sticky top bar (so the
+     hamburger stays tappable to close it). */
+  .sidebar {
+    position: fixed;
+    top: 48px;
+    left: 0;
+    bottom: 0;
+    height: calc(100dvh - 48px);
+    width: 270px;
+    max-width: 82vw;
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: var(--shadow-lg);
+    border-right: 1px solid var(--border);
+  }
+
+  .app-shell.sidebar-open .sidebar {
+    transform: none;
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 48px 0 0 0;
+    z-index: 55;
+    background: rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .app-shell.sidebar-open .sidebar-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  main {
+    padding: 14px 12px;
+  }
+
+  /* Native inputs at < 16px trigger iOS's focus auto-zoom. */
+  select,
+  input,
+  textarea {
+    font-size: 16px;
+  }
+
+  .page-heading h1 {
+    font-size: 18px;
+  }
+
+  .toolbar {
+    gap: 8px;
+  }
+
+  .search-input-wrap,
+  .toolbar-tag-filter {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+  }
+
+  /* Detail page: stack the viewer and the metadata column. */
+  .detail-layout {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .meta-pane {
+    width: 100%;
+  }
+
+  .viewer-shell {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .viewer-pane {
+    height: 60vw;
+    min-height: 240px;
+    max-height: 420px;
+  }
+
+  .plate-rail {
+    width: auto;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+  }
+
+  .plate-rail button {
+    flex-shrink: 0;
+    min-width: 68px;
+  }
+
+  .viewer-hint {
+    white-space: normal;
+    flex-wrap: wrap;
+    justify-content: center;
+    text-align: center;
+    max-width: calc(100% - 16px);
+    gap: 4px 10px;
+  }
+
+  .detail-breadcrumb {
+    flex-wrap: wrap;
+  }
+
+  .rescan-button {
+    margin-left: 0;
+  }
+
+  .add-root-form {
+    flex-wrap: wrap;
+  }
+
+  .add-root-form input {
+    flex: 1 1 100%;
+  }
+
+  .scan-progress {
+    max-width: none;
+  }
+
+  .pagination {
+    gap: 10px;
+  }
+
+  .lightbox-nav {
+    width: 42px;
+    height: 42px;
+    font-size: 30px;
+  }
+
+  .lightbox-prev {
+    left: 4px;
+  }
+
+  .lightbox-next {
+    right: 4px;
+  }
+
+  .lightbox-zoom {
+    right: 56px;
+    width: 32px;
+    height: 32px;
+    font-size: 17px;
+  }
 }

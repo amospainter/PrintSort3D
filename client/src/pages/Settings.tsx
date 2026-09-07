@@ -113,6 +113,7 @@ export default function Settings() {
 
       <section>
         <h3>Watched folders</h3>
+        <div className="table-scroll">
         <table className="file-table">
           <thead>
             <tr>
@@ -145,6 +146,7 @@ export default function Settings() {
             ))}
           </tbody>
         </table>
+        </div>
 
         <div className="add-root-form">
           <input placeholder="Label (optional)" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} />
@@ -188,6 +190,7 @@ export default function Settings() {
         {tags.length === 0 ? (
           <p className="muted">No tags yet. Add tags to files from the library or a file's detail page.</p>
         ) : (
+          <div className="table-scroll">
           <table className="file-table tag-manage-table">
             <thead>
               <tr>
@@ -239,6 +242,7 @@ export default function Settings() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
 

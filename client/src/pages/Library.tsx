@@ -504,6 +504,7 @@ export default function Library() {
       )}
 
       {!loading && view === 'table' && (
+        <div className="table-scroll">
         <table className="file-table">
           <thead>
             <tr>
@@ -543,6 +544,7 @@ export default function Library() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
 
       {band && (

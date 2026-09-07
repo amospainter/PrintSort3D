@@ -324,7 +324,9 @@ export default function Detail() {
                     painted={painted}
                   />
                   <div className="viewer-hint">
-                    <span>Drag to rotate &middot; Right-drag to pan &middot; Scroll to zoom</span>
+                    <span className="viewer-hint-gestures">
+                      Drag to rotate &middot; Right-drag to pan &middot; Scroll to zoom
+                    </span>
                     {file.meshUrl && file.filaments.length > 1 && (
                       <label className="viewer-paint-toggle">
                         <input type="checkbox" checked={painted} onChange={(e) => setPainted(e.target.checked)} />
