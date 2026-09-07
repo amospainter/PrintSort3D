@@ -31,7 +31,6 @@ export interface TagInfo {
 
 export interface AppSettings {
   defaultPlateSize: PlateSize;
-  slicerCommand: string; // path to the slicer exe for "Open in slicer"; "" = auto-detect Bambu Studio
 }
 
 export interface ArchiveEntry {
@@ -168,9 +167,6 @@ export const api = {
   updateSettings(patch: Partial<AppSettings> & { defaultPlateSize: PlateSize }) {
     return request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
   },
-  openInSlicer(id: number) {
-    return request<{ ok: true; method: string; command: string }>(`/api/files/${id}/open`, { method: 'POST' });
-  },
   scan(root?: string) {
     return request<ScanResult>('/api/scan', {
       method: 'POST',
@@ -191,6 +187,11 @@ export const api = {
   },
   rawFileUrl(id: number) {
     return `/api/raw/${id}`;
+  },
+  // Same file, but served as an attachment so the browser saves it rather than navigating
+  // to it — the "Download to open" button hands the model to the user's local slicer.
+  downloadFileUrl(id: number) {
+    return `/api/raw/${id}?download=1`;
   },
   listArchiveEntries(id: number) {
     return request<ArchiveEntry[]>(`/api/files/${id}/archive`);

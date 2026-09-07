@@ -152,28 +152,14 @@ describe('files routes', () => {
     expect(bad.status).toBe(400);
   });
 
-  it('exposes and updates the slicer command, trimming it and leaving it untouched when omitted', async () => {
-    expect((await request(app).get('/api/settings')).body.slicerCommand).toBe('');
-
-    const set = await request(app)
-      .put('/api/settings')
-      .send({ defaultPlateSize: { x: 256, y: 256 }, slicerCommand: '  /opt/bambu  ' });
-    expect(set.body.slicerCommand).toBe('/opt/bambu');
-
-    // A later plate-size-only PUT must not wipe the stored slicer command.
-    await request(app).put('/api/settings').send({ defaultPlateSize: { x: 256, y: 256 } });
-    expect((await request(app).get('/api/settings')).body.slicerCommand).toBe('/opt/bambu');
-  });
-
-  it('rejects opening an archive in a slicer', async () => {
-    // The zip fixture lives in the shared scan setup; find it by extension.
-    const zip = (await request(app).get('/api/files?ext=.zip')).body.items[0];
-    if (zip) {
-      const res = await request(app).post(`/api/files/${zip.id}/open`);
-      expect(res.status).toBe(400);
-    }
-    const missing = await request(app).post('/api/files/99999/open');
-    expect(missing.status).toBe(404);
+  it('serves a raw file as an attachment when ?download is set', async () => {
+    const file = (await request(app).get('/api/files')).body.items.find(
+      (f: { ext: string }) => f.ext !== '.zip'
+    );
+    expect(file).toBeTruthy();
+    const res = await request(app).get(`/api/raw/${file.id}?download=1`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-disposition']).toMatch(/^attachment/);
   });
 
   it('404s when patching an unknown file id', async () => {

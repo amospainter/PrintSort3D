@@ -5,7 +5,7 @@ import { ModelViewer } from '../ModelViewer';
 import { ImageLightbox } from '../ImageLightbox';
 import { TagInput } from '../TagInput';
 import { tagColorMap } from '../tagColors';
-import { ChevronLeftIcon, RefreshIcon } from '../Icons';
+import { ChevronLeftIcon, RefreshIcon, DownloadIcon } from '../Icons';
 
 function fullFilePath(file: FileEntry): string {
   const root = (file.root.path ?? '').replace(/[\\/]+$/, '');
@@ -134,8 +134,6 @@ export default function Detail() {
   const [activePlateIndex, setActivePlateIndex] = useState<number | null>(null);
   const [rescanning, setRescanning] = useState(false);
   const [rescanMessage, setRescanMessage] = useState<string | null>(null);
-  const [opening, setOpening] = useState(false);
-  const [openMessage, setOpenMessage] = useState<string | null>(null);
   const [painted, setPainted] = useState(false);
   // "Load full model": swap the fast server-baked mesh for the raw source file parsed
   // in-browser (three.js's own STL/OBJ/3MF loaders) — an escape hatch for when the bake
@@ -217,16 +215,6 @@ export default function Detail() {
       .finally(() => setSaving(false));
   };
 
-  const openInSlicer = () => {
-    setOpening(true);
-    setOpenMessage(null);
-    api
-      .openInSlicer(fileId)
-      .then((r) => setOpenMessage(r.method === 'os-default' ? 'Opened with the default app' : 'Opened in slicer'))
-      .catch(() => setOpenMessage('Could not open — set the slicer path in Settings'))
-      .finally(() => setOpening(false));
-  };
-
   if (!file) return <p>Loading...</p>;
 
   return (
@@ -241,13 +229,17 @@ export default function Detail() {
           <RefreshIcon className={rescanning ? 'spin' : ''} /> {rescanning ? 'Rescanning…' : 'Rescan'}
         </button>
         {file.ext !== '.zip' && !file.missing && (
-          <button type="button" className="rescan-button" disabled={opening} onClick={openInSlicer}>
-            {opening ? 'Opening…' : 'Open in slicer'}
-          </button>
+          <a
+            className="rescan-button"
+            href={api.downloadFileUrl(fileId)}
+            download={file.filename}
+            title="Download the model file, then open it in your slicer"
+          >
+            <DownloadIcon /> Download to open
+          </a>
         )}
       </div>
       {rescanMessage && <p className="muted rescan-status">{rescanMessage}</p>}
-      {openMessage && <p className="muted rescan-status">{openMessage}</p>}
 
       <div className="detail-layout">
         <div className="viewer-column">

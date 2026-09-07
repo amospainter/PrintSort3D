@@ -971,6 +971,10 @@ button.tag-chip {
   padding: 5px 12px;
 }
 
+a.rescan-button {
+  text-decoration: none;
+}
+
 .rescan-button:hover:not(:disabled) {
   background: var(--bg-sunken);
   color: var(--text);

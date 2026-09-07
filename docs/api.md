@@ -102,15 +102,6 @@ Tag names are trimmed/lowercased; `add` names are created on demand; `remove` na
 don't exist are ignored; ids that don't exist are skipped. `400` if `fileIds` is empty or
 neither `add` nor `remove` is given. Returns `{ updated: number }`.
 
-## `POST /api/files/:id/open`
-
-Opens the file in the user's slicer (Bambu Studio by default) on the **host running the
-server**. Restricted to loopback callers (unless `PRINTSORT_ALLOW_REMOTE_LAUNCH=1`) since it
-spawns a desktop GUI process. Resolution order: `config.slicerCommand` (Settings, or
-`PRINTSORT_SLICER_COMMAND`) → an auto-detected Bambu Studio install → the OS default handler.
-`400` for a `.zip`, `404` for an unknown id, `403` from a non-local caller, `500` if the
-launch fails. Returns `{ ok: true, method, command }`.
-
 ## `GET /api/tags`
 
 Returns every distinct tag in use, alphabetically by name:
@@ -131,15 +122,12 @@ Removes the tag from every file and deletes it. Returns `{ ok: true }`, or `404`
 
 ## `GET /api/settings`
 
-Returns app-wide settings: `{ defaultPlateSize: { x: number, y: number }, slicerCommand: string }`
-(`defaultPlateSize` in mm; `slicerCommand` is the path to the slicer executable for
-`POST /api/files/:id/open`, `""` = auto-detect).
+Returns app-wide settings: `{ defaultPlateSize: { x: number, y: number } }` (`defaultPlateSize` in mm).
 
 ## `PUT /api/settings`
 
-Updates app-wide settings. Body: `{ defaultPlateSize: { x: number, y: number }, slicerCommand?: string }`
-— `defaultPlateSize` must have positive values (mm); `slicerCommand` is trimmed and, when
-omitted, left unchanged. Returns the saved settings, or `400` if `x`/`y` aren't positive.
+Updates app-wide settings. Body: `{ defaultPlateSize: { x: number, y: number } }` — must have
+positive values (mm). Returns the saved settings, or `400` if `x`/`y` aren't positive.
 
 ## `POST /api/scan`
 
@@ -200,7 +188,10 @@ no GPU/WebGL). There is no upload endpoint.
 ## `GET /api/raw/:id`
 
 Streams the actual model file from disk (used by the interactive viewer to fetch bytes when
-it falls back to parsing the raw file).
+it falls back to parsing the raw file). With `?download=1` it is sent as an attachment
+(`Content-Disposition`) so the browser saves it — the Detail page's "Download to open" button
+uses this so a remote/LAN user gets the file onto their own machine, where their slicer's file
+association opens it.
 
 - Resolves `root.path + relativePath`, and rejects with `400 { error: "invalid path" }` if the resolved path would land outside the file's configured root (a defense against a corrupted/tampered `relative_path` escaping via `../`).
 - Returns `404` if the file's DB record doesn't exist, or if the resolved path doesn't exist on disk (e.g. flagged `missing`).

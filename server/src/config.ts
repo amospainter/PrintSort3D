@@ -21,10 +21,6 @@ export interface AppConfig {
   // Build-plate footprint used by the 3D viewer for files that don't declare their own
   // (non-Bambu 3MFs, STL/OBJ, unparseable slicer settings). User-editable in Settings.
   defaultPlateSize: PlateSize;
-  // Absolute path to the slicer executable used by "Open in slicer" (POST /api/files/:id/open).
-  // Empty ⇒ the server auto-detects Bambu Studio, falling back to the OS default handler for
-  // the file's extension. User-editable in Settings. See server/src/openInApp.ts.
-  slicerCommand: string;
 }
 
 export const DEFAULT_PLATE_SIZE: PlateSize = { x: 256, y: 256 };
@@ -94,10 +90,9 @@ export function loadConfig(): AppConfig {
   const configPath = getConfigPath();
   let fileRoots: RootConfig[] = [];
   let defaultPlateSize = { ...DEFAULT_PLATE_SIZE };
-  let slicerCommand = '';
 
   if (!fs.existsSync(configPath)) {
-    const initial: AppConfig = { roots: [], defaultPlateSize: { ...DEFAULT_PLATE_SIZE }, slicerCommand: '' };
+    const initial: AppConfig = { roots: [], defaultPlateSize: { ...DEFAULT_PLATE_SIZE } };
     fs.writeFileSync(configPath, JSON.stringify(initial, null, 2));
   } else {
     const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Partial<AppConfig>;
@@ -105,30 +100,23 @@ export function loadConfig(): AppConfig {
       ? parsed.roots.map((r) => ({ label: r.label, path: r.path }))
       : [];
     defaultPlateSize = normalizePlateSize(parsed.defaultPlateSize);
-    slicerCommand = typeof parsed.slicerCommand === 'string' ? parsed.slicerCommand.trim() : '';
   }
-
-  // Env override wins over the persisted value — lets a deployment pin the slicer path.
-  const envSlicer = process.env.PRINTSORT_SLICER_COMMAND?.trim();
-  if (envSlicer) slicerCommand = envSlicer;
 
   const envRoots = parseEnvRoots();
   // An env root wins over a same-path file root (it becomes managed).
   const userRoots = fileRoots.filter((r) => !envRoots.some((e) => samePath(e.path, r.path)));
 
-  return { roots: [...userRoots, ...envRoots], defaultPlateSize, slicerCommand };
+  return { roots: [...userRoots, ...envRoots], defaultPlateSize };
 }
 
 export function saveConfig(config: {
   roots: RootConfig[];
   defaultPlateSize?: PlateSize;
-  slicerCommand?: string;
 }): void {
   // Managed (env-derived) roots are never persisted — they're re-derived on every load.
   const persisted: AppConfig = {
     roots: config.roots.filter((r) => !r.managed).map((r) => ({ label: r.label, path: r.path })),
     defaultPlateSize: normalizePlateSize(config.defaultPlateSize),
-    slicerCommand: typeof config.slicerCommand === 'string' ? config.slicerCommand.trim() : '',
   };
   fs.writeFileSync(getConfigPath(), JSON.stringify(persisted, null, 2));
 }

@@ -7,7 +7,6 @@ import { runScan, rescanFile } from './scanner';
 import { ASSETS_DIR } from './paths';
 import { deleteCachedImages, thumbnailFilePath, BAKED_MESH_FILENAME } from './assets';
 import { listArchiveModelEntries, readArchiveEntry } from './archive';
-import { openInSlicer } from './openInApp';
 
 export const router = Router();
 
@@ -524,13 +523,12 @@ router.put('/roots', (req, res) => {
 
 router.get('/settings', (_req, res) => {
   const config = loadConfig();
-  res.json({ defaultPlateSize: config.defaultPlateSize, slicerCommand: config.slicerCommand });
+  res.json({ defaultPlateSize: config.defaultPlateSize });
 });
 
 router.put('/settings', (req, res) => {
-  const { defaultPlateSize, slicerCommand } = req.body as {
+  const { defaultPlateSize } = req.body as {
     defaultPlateSize?: { x?: unknown; y?: unknown };
-    slicerCommand?: unknown;
   };
   const x = Number(defaultPlateSize?.x);
   const y = Number(defaultPlateSize?.y);
@@ -538,41 +536,8 @@ router.put('/settings', (req, res) => {
     return res.status(400).json({ error: 'defaultPlateSize must have positive x and y (mm)' });
   }
   const config = loadConfig();
-  const nextSlicer = typeof slicerCommand === 'string' ? slicerCommand.trim() : config.slicerCommand;
-  saveConfig({ ...config, defaultPlateSize: { x, y }, slicerCommand: nextSlicer });
-  res.json({ defaultPlateSize: { x, y }, slicerCommand: nextSlicer });
-});
-
-// Opens a catalog file in the user's slicer (Bambu Studio by default). Gated to loopback
-// callers: it launches a desktop GUI process on the host, which only makes sense for the
-// local user running the app — not a remote LAN client or a container. See openInApp.ts.
-router.post('/files/:id/open', async (req, res) => {
-  const remote = req.socket.remoteAddress ?? '';
-  const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
-  if (!isLoopback && process.env.PRINTSORT_ALLOW_REMOTE_LAUNCH !== '1') {
-    return res.status(403).json({ error: 'open is only available to the local user' });
-  }
-
-  const resolved = resolveFilePath(Number(req.params.id));
-  if ('error' in resolved) {
-    const status = resolved.error === 'not found' ? 404 : resolved.error === 'invalid path' ? 400 : 404;
-    return res.status(status).json({ error: resolved.error });
-  }
-  if (resolved.ext.toLowerCase() === '.zip') {
-    return res.status(400).json({ error: 'archives cannot be opened in a slicer' });
-  }
-
-  try {
-    const result = await openInSlicer(resolved.fullPath);
-    if (!result.ok) {
-      return res
-        .status(500)
-        .json({ error: 'could not launch slicer', message: result.error, command: result.command });
-    }
-    res.json({ ok: true, method: result.method, command: result.command });
-  } catch (err) {
-    res.status(500).json({ error: 'could not launch slicer', message: err instanceof Error ? err.message : String(err) });
-  }
+  saveConfig({ ...config, defaultPlateSize: { x, y } });
+  res.json({ defaultPlateSize: { x, y } });
 });
 
 // Thumbnails are rendered server-side at scan time now (embedded plate image for Bambu
@@ -638,6 +603,12 @@ router.get('/raw/:id', (req, res) => {
   if ('error' in resolved) {
     const status = resolved.error === 'not found' ? 404 : resolved.error === 'invalid path' ? 400 : 404;
     return res.status(status).json({ error: resolved.error });
+  }
+  // ?download=1 forces a save dialog (Content-Disposition: attachment) instead of inline
+  // display — used by the client's "Download to open" button so a remote/LAN user gets the
+  // file onto their own machine, where their slicer's file association takes over.
+  if (req.query.download !== undefined) {
+    return res.download(resolved.fullPath, path.basename(resolved.fullPath));
   }
   res.sendFile(resolved.fullPath);
 });
