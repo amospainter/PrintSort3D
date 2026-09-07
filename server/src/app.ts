@@ -1,8 +1,13 @@
 import express from 'express';
-import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { router } from './routes';
+import {
+  corsMiddleware,
+  basicAuthMiddleware,
+  csrfGuardMiddleware,
+  readonlyMiddleware,
+} from './security';
 
 // When a built client is present (Docker / single-deployable setups), serve it from the
 // same origin as the API so the app is reachable on one port with no reverse proxy.
@@ -22,8 +27,16 @@ function resolveClientDist(): string | null {
 
 export function createApp() {
   const app = express();
-  app.use(cors());
-  app.use(express.json({ limit: '25mb' }));
+  // Order matters: CORS first (so its preflight response beats every guard), then auth, then
+  // the CSRF and read-only guards, then body parsing and routes. All the guards are no-ops
+  // unless their env var is set — see security.ts.
+  app.use(corsMiddleware());
+  app.use(basicAuthMiddleware());
+  app.use(csrfGuardMiddleware());
+  app.use(readonlyMiddleware());
+  // 2mb is ample: the largest body any route accepts is a roots array or a tag list. (This
+  // was 25mb for a since-removed client thumbnail-upload endpoint.)
+  app.use(express.json({ limit: '2mb' }));
   app.use('/api', router);
 
   const clientDist = resolveClientDist();

@@ -17,6 +17,7 @@ See [docs/architecture.md](docs/architecture.md) for how it's built, [docs/api.m
 - **Tags & notes** — free-form tags (with colors) and notes per file, filterable from the library.
 - **Duplicate detection** — exact byte matches (SHA-256) and order/rounding-tolerant geometry hashing, surfaced as a dedicated Duplicates view and per-file list.
 - **Slicer metadata** — filament type/color, layer height, and the raw settings blob extracted from 3MFs.
+- **Print estimates** — print time, filament weight/length, printer model and supports, read from a Bambu/Orca 3MF's `slice_info.config` and shown on each file (with badges in the grid). Sort the library by print time or filament used.
 - **`.zip` archive browsing** — lists and previews 3D model files inside archives without extracting them.
 
 | Folder tree & path breadcrumb | Per-file detail & 3D viewer |
@@ -57,6 +58,22 @@ Open `http://localhost:5173` in your browser.
 
 On first run, the server creates `server/config.json` (empty root list) and `server/catalog.db` (SQLite). Go to the **Settings** page in the app to add folders you want scanned, then click **Rescan now**.
 
+## Exposing it beyond localhost
+
+The server binds `127.0.0.1` by default and has **no authentication** — it's built for local
+use. To reach it from another machine, set `HOST=0.0.0.0` and put access control in front:
+
+| Env var | Effect |
+|---|---|
+| `PRINTSORT_PASSWORD` | Require HTTP Basic auth on every request (the browser prompts). |
+| `PRINTSORT_READONLY=1` | Reject every catalogue edit — browsing only. |
+| `PRINTSORT_ROOTS_LOCKED=1` | Forbid changing the watched-folder list via the API. |
+| `PRINTSORT_CORS_ORIGINS` | Comma-separated origin allowlist, if a browser app on another origin needs the API. |
+
+The Docker image sets `HOST=0.0.0.0`, but [`docker-compose.yml`](docker-compose.yml) publishes
+the port on loopback only (`127.0.0.1:3001:3001`) until you opt in. See
+[docs/api.md](docs/api.md#access-control) for details.
+
 ## Running in Docker
 
 One self-contained image — the Node server serves the API **and** the built client on port
@@ -76,10 +93,11 @@ MODELS_DIR=/path/to/your/print/files docker compose up -d
 ```
 
 Open `http://localhost:3001`. Later, `docker compose pull && docker compose up -d` gets the
-newest image. Without compose:
+newest image. Without compose (note the loopback-only port bind — drop the `127.0.0.1:` and
+set `PRINTSORT_PASSWORD` to expose it on your LAN):
 
 ```sh
-docker run -d --name printsort3d -p 3001:3001 -v printsort3d-data:/data -v /path/to/your/print/files:/models/prints:ro --restart unless-stopped ghcr.io/amospainter/printsort3d:latest
+docker run -d --name printsort3d -p 127.0.0.1:3001:3001 -v printsort3d-data:/data -v /path/to/your/print/files:/models/prints:ro --restart unless-stopped ghcr.io/amospainter/printsort3d:latest
 ```
 
 ### Build your own image

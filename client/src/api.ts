@@ -23,6 +23,33 @@ export interface PlateSize {
   y: number; // mm
 }
 
+export interface SliceFilamentUsage {
+  id: number | null;
+  type: string | null;
+  color: string | null;
+  usedGrams: number | null;
+  usedMeters: number | null;
+}
+
+export interface SlicePlateInfo {
+  index: number | null;
+  printTimeSeconds: number | null;
+  filamentWeightGrams: number | null;
+  supportUsed: boolean | null;
+  filaments: SliceFilamentUsage[];
+}
+
+// Parsed from a Bambu/Orca 3MF's Metadata/slice_info.config — the slicing result.
+export interface SliceInfo {
+  printTimeSeconds: number | null;
+  filamentWeightGrams: number | null;
+  filamentLengthMeters: number | null;
+  printerModelId: string | null;
+  nozzleDiameterMm: number | null;
+  supportUsed: boolean | null;
+  plates: SlicePlateInfo[];
+}
+
 export interface TagInfo {
   name: string;
   color: string | null; // explicit hex choice, or null to use the auto palette colour
@@ -56,7 +83,10 @@ export interface FileEntry {
   filaments: { color: string; type: string | null }[]; // every configured filament slot (multi-color / AMS prints)
   meshUrl: string | null; // /api/files/:id/mesh — server-baked render mesh (positions/indices + folded-in paint), else null
   layerHeight: string | null;
-  slicerMetadata: Record<string, unknown> | null;
+  // The raw slicer-settings blob. Present only on GET /files/:id — list responses omit it
+  // (it's large and unused by the Library).
+  slicerMetadata?: Record<string, unknown> | null;
+  sliceInfo: SliceInfo | null; // print time / filament / printer — Bambu/Orca sliced 3MFs only
   embeddedImages: string[]; // absolute URLs, e.g. "/api/assets/12/plate_1.webp"
   dimensions: { x: number; y: number; z: number } | null; // computed server-side during scan
   tags: string[];
@@ -118,9 +148,11 @@ export const api = {
       tags?: string[];
       ext?: string;
       sort?: string;
+      dir?: 'asc' | 'desc';
       page?: number;
       pageSize?: number;
       duplicatesOnly?: boolean;
+      missingOnly?: boolean;
     } = {}
   ) {
     const qs = new URLSearchParams();
@@ -149,6 +181,16 @@ export const api = {
       body: JSON.stringify({ fileIds, ...change }),
     });
   },
+  // Removes a missing file from the catalogue (row + tags + cached assets). Never touches disk.
+  deleteFile(id: number) {
+    return request<{ ok: true }>(`/api/files/${id}`, { method: 'DELETE' });
+  },
+  purgeMissing(root?: string) {
+    return request<{ removed: number }>('/api/files/purge-missing', {
+      method: 'POST',
+      body: root ? JSON.stringify({ root }) : undefined,
+    });
+  },
   listTags() {
     return request<TagInfo[]>('/api/tags');
   },
@@ -172,6 +214,9 @@ export const api = {
       method: 'POST',
       body: root ? JSON.stringify({ root }) : undefined,
     });
+  },
+  getScanStatus() {
+    return request<{ scanning: boolean }>('/api/scan/status');
   },
   getRoots() {
     return request<RootConfig[]>('/api/roots');

@@ -25,12 +25,17 @@ export async function cacheThreeMfImages(fileId: number, filePath: string): Prom
   fs.mkdirSync(outDir, { recursive: true });
 
   const savedNames: string[] = [];
+  const used = new Set<string>();
   for (const image of images) {
     const baseName = sanitizeName(path.basename(image.name, path.extname(image.name)));
-    const outName = `${baseName}.webp`;
+    // Two 3MF entries can share a basename (e.g. Metadata/plate_1.png and a nested one) —
+    // disambiguate so the second doesn't silently overwrite the first's WebP.
+    let outName = `${baseName}.webp`;
+    for (let n = 2; used.has(outName); n++) outName = `${baseName}-${n}.webp`;
     try {
       const webpBuffer = await sharp(image.buffer).webp({ quality: 82 }).toBuffer();
       fs.writeFileSync(path.join(outDir, outName), webpBuffer);
+      used.add(outName);
       savedNames.push(outName);
     } catch {
       // Not a valid/decodable image, or a conversion failure — skip it, keep the rest.
@@ -132,4 +137,30 @@ export function cacheBakedMeshParts(fileId: number, parts: BakedPart[]): string 
 export function deleteCachedImages(fileId: number): void {
   const dir = path.join(ASSETS_DIR, String(fileId));
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * Deletes `ASSETS_DIR/<n>/` directories whose `<n>` is no longer a live `files.id` — leftovers
+ * from a file removed via purge-missing / DELETE, or an old crash mid-teardown. `liveIds` is
+ * the current set of file ids. Returns how many directories were removed.
+ */
+export function pruneOrphanAssets(liveIds: Set<number>): number {
+  let removed = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(ASSETS_DIR, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    if (liveIds.has(Number(entry.name))) continue;
+    try {
+      fs.rmSync(path.join(ASSETS_DIR, entry.name), { recursive: true, force: true });
+      removed++;
+    } catch {
+      /* best effort */
+    }
+  }
+  return removed;
 }

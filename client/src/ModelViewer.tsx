@@ -10,6 +10,7 @@ import {
   bedZ,
   applyPaintColors,
   removePaintColors,
+  disposeObject3D,
 } from './loadModel';
 
 interface Footprint {
@@ -85,6 +86,15 @@ function Model({
       cancelled = true;
     };
   }, [ext, arrayBuffer, meshUrl, preferRaw]);
+
+  // Free the previous model's GPU buffers when it's replaced or the viewer unmounts —
+  // three.js never does this for you and the viewer would otherwise leak a model's worth of
+  // vertex data per file opened. Keyed on `object` identity, which only changes on a real
+  // reload (the in-place paint toggle below doesn't touch it).
+  useEffect(() => {
+    if (!object) return;
+    return () => disposeObject3D(object);
+  }, [object]);
 
   // Toggle painted vertex colours on the loaded meshes in place. Independent of the framing
   // effect below — geometry swaps don't change the bounding box, and plate visibility toggling
@@ -313,7 +323,7 @@ export function ModelViewer({
   const multi = (beds?.length ?? 0) > 1;
 
   return (
-    <Canvas camera={{ fov: 30, up: [0, 0, 1] }} gl={{ preserveDrawingBuffer: true }}>
+    <Canvas camera={{ fov: 30, up: [0, 0, 1] }}>
       {/* Fixed dark void so the plate / dark frame / darker background read as three
           distinct tones regardless of the page's light or dark theme. */}
       <color attach="background" args={['#15181c']} />

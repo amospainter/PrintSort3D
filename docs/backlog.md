@@ -4,6 +4,17 @@ Items intentionally scoped out, with enough context to pick them up later. Not a
 prioritized roadmap; move an entry into a PR when it's actually being done and delete it
 from here.
 
+See also [expert_review_0906.md](expert_review_0906.md) — most of its findings are fixed (as
+of 2026-09-07: §10 purge-missing, §14 path/parse robustness, §15 DB tuning all done). Still
+open: §5 (geometry is still re-parsed for dimensions + geometry-hash ×2 + the bake — feed all
+three from one parse of the baked parts; needs a `CURRENT_SCANNER_VERSION` bump and a look at
+whether the 3MF transform-applied vs local-vertex distinction matters for duplicate hashing),
+§4's worker-thread scan offload, the `duplicate_count` per-row correlated subquery, the
+`/api/files/:id/archive-raw` double zip open, and the rest of §16 (model grouping, source
+URL/licence, printer profiles + fit check, mesh health, print history, more formats, FTS
+search, duplicate resolution, tag export/sidecars, scan progress, painted thumbnails,
+light-theme viewer).
+
 ---
 
 ## Paint colors on the raw full-res model

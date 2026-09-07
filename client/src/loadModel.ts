@@ -150,6 +150,32 @@ export function applyPaintColors(object: THREE.Object3D, filamentColors: string[
   return painted;
 }
 
+/**
+ * Frees the GPU resources held by a loaded model. three.js has no finalizer — a
+ * BufferGeometry's VRAM is only released by an explicit dispose(), so without this every
+ * file opened in the viewer leaks its vertex buffers until the WebGL context is lost.
+ * The shared BAKED_GRAY material is module-level and reused by every baked mesh, so it is
+ * never disposed here.
+ */
+export function disposeObject3D(object: THREE.Object3D): void {
+  object.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.geometry?.dispose();
+    // applyPaintColors stashes the pre-paint geometry/material here — free that too.
+    const saved = mesh.userData?.unpainted as
+      | { geometry: THREE.BufferGeometry; material: THREE.Material }
+      | undefined;
+    saved?.geometry?.dispose();
+    const materials: unknown[] = [mesh.material, saved?.material].flat();
+    for (const m of materials) {
+      if (m && m !== BAKED_GRAY && typeof (m as THREE.Material).dispose === 'function') {
+        (m as THREE.Material).dispose();
+      }
+    }
+  });
+}
+
 /** Restores the original geometry/material stashed by applyPaintColors. */
 export function removePaintColors(object: THREE.Object3D): void {
   object.traverse((o) => {

@@ -2,6 +2,21 @@
 
 Base URL in dev: `http://localhost:3001/api` (the client proxies `/api/*` to this automatically — see `client/vite.config.ts`). All bodies are JSON unless noted.
 
+## Access control
+
+The server binds `127.0.0.1` unless `HOST` is set. All of the following are **off by default**
+(pure-localhost use is unchanged) and enabled per env var — see `server/src/security.ts`:
+
+| Env var | Effect |
+|---|---|
+| `PRINTSORT_PASSWORD` | HTTP Basic auth on every request (any username). `401` + `WWW-Authenticate` without it. |
+| `PRINTSORT_CORS_ORIGINS` | Comma-separated origin allowlist. The only way to get any CORS headers — without it, cross-origin browser calls are blocked by the absence of `Access-Control-Allow-Origin`. |
+| `PRINTSORT_READONLY=1` | `403` on every `POST`/`PUT`/`PATCH`/`DELETE`. |
+| `PRINTSORT_ROOTS_LOCKED=1` | `403` on `PUT /api/roots`. |
+
+Always on: a mutating request whose `Origin` header is neither same-origin nor allowlisted is
+refused with `403` (CSRF guard). Requests with no `Origin` (curl, server-to-server) pass.
+
 ## File object shape
 
 Returned by every endpoint below that mentions "a file object":
@@ -24,7 +39,8 @@ Returned by every endpoint below that mentions "a file object":
   filaments: { color: string, type: string | null }[],  // every filament slot from project_settings.config (multi-color / AMS), color normalized to "#RRGGBB"; [] if none
   meshUrl: string | null,         // "/api/files/:id/mesh" server-baked render mesh (STL/OBJ/3MF), else null
   layerHeight: string | null,
-  slicerMetadata: object | null,  // full raw parsed 3MF slicer settings, if present
+  slicerMetadata?: object | null, // full raw parsed 3MF slicer settings. ONLY on GET /api/files/:id and PATCH/rescan responses — list responses omit it (it's large and unused by the Library)
+  sliceInfo: SliceInfo | null,    // parsed Metadata/slice_info.config — print time, filament, printer model; null for non-3MF, unsliced, or PrusaSlicer files
   embeddedImages: string[],       // "/api/assets/:id/:name.webp" URLs for every image embedded in a 3MF, else []
   dimensions: { x: number, y: number, z: number } | null,  // bounding-box size, computed server-side at scan time
   tags: string[],                 // lowercase, deduped
@@ -40,6 +56,8 @@ Returned by every endpoint below that mentions "a file object":
 
 // DuplicateEntry: { id: number, filename: string, relativePath: string, rootLabel: string, matchType: "exact" | "geometry" }
 // PlateEntry: { index: number, images: string[], buildItemIndices?: number[], name?: string } — images are "/api/assets/:id/:name.webp" URLs; name is the plate's human-assigned label from Bambu/Orca's plate-tab rename, absent if never renamed
+// SliceInfo: { printTimeSeconds, filamentWeightGrams, filamentLengthMeters, printerModelId, nozzleDiameterMm, supportUsed, plates: SlicePlateInfo[] } — file totals summed across plates; any field may be null
+// SlicePlateInfo: { index, printTimeSeconds, filamentWeightGrams, supportUsed, filaments: { id, type, color, usedGrams, usedMeters }[] }
 ```
 
 ## `GET /api/files`
@@ -56,7 +74,9 @@ Query params (all optional):
 | `tags` | Comma-separated tag names; a file must carry **every** listed tag (AND, not OR) |
 | `ext` | Only files with this extension (`.stl`, `.3mf`, `.obj`, `.zip` — leading dot optional) |
 | `duplicatesOnly` | `1` or `true` — only files that share a `content_hash` or `geometry_hash` with another file |
-| `sort` | One of `name`, `size`, `added`, `mtime`. Defaults to `added`, always descending. |
+| `missingOnly` | `1` or `true` — only files flagged `missing` on the last scan |
+| `sort` | One of `name`, `size`, `added`, `mtime`, `printTime`, `filament`. Defaults to `added`. `printTime`/`filament` read `slice_info_json`; files without it sort last. |
+| `dir` | `asc` or `desc`. Omitted ⇒ per-column default (`name` ascends, everything else descends). |
 | `page` | 1-based page number. Defaults to `1`. |
 | `pageSize` | Items per page. Defaults to `60`, clamped to a max of `200`. |
 
@@ -88,6 +108,19 @@ Update notes and/or tags for a file. Body (both optional, at least one expected)
 
 - `tags`, if provided, **replaces** the file's full tag set (not merged). Each tag is trimmed and lowercased; empty strings are dropped; new tag names are created automatically.
 - Returns the updated file object, or `404` if the id doesn't exist.
+
+## `DELETE /api/files/:id`
+
+Removes a **missing** file from the catalogue — the row, its tags, and its cached assets
+(`ASSETS_DIR/<id>/`). Never touches the file on disk. `404` for an unknown id, `409` if the
+file is still present on disk (delete it there, or just rescan — a present file comes back).
+Returns `{ ok: true }`.
+
+## `POST /api/files/purge-missing`
+
+Bulk version of the above: removes every file flagged `missing`. `?root=<label>` (or
+`{ "root": "<label>" }` in the body) scopes it to one watched folder. Returns
+`{ removed: number }`.
 
 ## `POST /api/files/bulk-tags`
 
@@ -137,7 +170,13 @@ Triggers a rescan. With no body (or `{}`), scans every folder in `config.json` (
 { added: number, updated: number, missing: number }
 ```
 
-`missing` is the count of files flagged missing this pass (not found on disk within their configured root), not a running total.
+`missing` is the count of files flagged missing this pass (not found on disk within their configured root), not a running total. A root whose path is unreachable (unplugged drive, unmounted share) is skipped entirely — its rows are left as-is, not flagged missing.
+
+Only one scan runs at a time: calling this while a scan is in progress returns that scan's result rather than starting a second. `403` when `PRINTSORT_READONLY` is set.
+
+## `GET /api/scan/status`
+
+`{ scanning: boolean }` — whether a scan is currently running.
 
 Async and can take a while on a large library — for each new or changed `.3mf` file, it also converts every embedded image to WebP (via `sharp`) before the response resolves.
 
@@ -171,8 +210,11 @@ removed via `PUT /api/roots`. User-added roots have no `managed` key.
 Replaces the **user-managed** portion of the root folder list. Body: `{ label: string, path:
 string }[]` (a bare array, not wrapped in an object). Returns the effective list — the roots
 as saved plus any managed roots re-derived from the environment — or `400` if the body isn't
-an array. Managed roots in the payload are ignored on write and can't be removed; omitting
-one does **not** delete its catalog entries.
+an array, an entry is missing its label/path, a path isn't absolute, or a **newly-added**
+path doesn't exist as a directory (an already-configured root whose drive is offline is
+allowed). Managed roots in the payload are ignored on write and can't be removed; omitting
+one does **not** delete its catalog entries. `403` when `PRINTSORT_ROOTS_LOCKED` or
+`PRINTSORT_READONLY` is set.
 
 Note: this only updates `config.json` and the `roots` table — it does **not** scan. Call `POST /api/scan` afterward to pick up files from a newly added root.
 

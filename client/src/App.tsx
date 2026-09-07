@@ -13,6 +13,7 @@ import {
   FolderIcon,
   PlusIcon,
   RefreshIcon,
+  AlertIcon,
 } from './Icons';
 
 interface FolderNode {
@@ -181,6 +182,7 @@ export default function App() {
   const [roots, setRoots] = useState<RootConfig[]>([]);
   const [folders, setFolders] = useState<FolderEntry[]>([]);
   const [dupCount, setDupCount] = useState(0);
+  const [missingCount, setMissingCount] = useState(0);
   const [scanning, setScanning] = useState(false);
   // Label of the single source currently being rescanned, or null. Distinct from `scanning`
   // (the whole-library pass) so only the row being scanned shows a spinner.
@@ -190,6 +192,7 @@ export default function App() {
     api.getRoots().then(setRoots);
     api.listFolders().then(setFolders);
     api.listFiles({ duplicatesOnly: true, pageSize: 1 }).then((res) => setDupCount(res.total));
+    api.listFiles({ missingOnly: true, pageSize: 1 }).then((res) => setMissingCount(res.total));
   };
 
   useEffect(refreshSidebar, [location.pathname]);
@@ -222,7 +225,8 @@ export default function App() {
   const activeRoot = searchParams.get('root');
   const activeFolder = searchParams.get('folder');
   const isDuplicatesView = onLibrary && searchParams.get('dup') === '1';
-  const isAllModelsView = onLibrary && !isDuplicatesView && !activeRoot;
+  const isMissingView = onLibrary && searchParams.get('missing') === '1';
+  const isAllModelsView = onLibrary && !isDuplicatesView && !isMissingView && !activeRoot;
 
   return (
     <div className="app">
@@ -238,6 +242,11 @@ export default function App() {
           <SidebarLink to="/?dup=1" active={isDuplicatesView} icon={<CopyIcon />} badge={dupCount}>
             Duplicates
           </SidebarLink>
+          {(missingCount > 0 || isMissingView) && (
+            <SidebarLink to="/?missing=1" active={isMissingView} icon={<AlertIcon />} badge={missingCount}>
+              Missing
+            </SidebarLink>
+          )}
         </nav>
 
         <div className="sidebar-section">

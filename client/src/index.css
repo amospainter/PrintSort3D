@@ -617,6 +617,33 @@ button:disabled {
   margin-bottom: 0;
 }
 
+.sort-control {
+  display: flex;
+  gap: 4px;
+}
+
+.sort-dir-toggle {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  padding: 7px 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.sort-dir-toggle:hover:not(:disabled) {
+  background: var(--bg-sunken);
+}
+
+.card-slice {
+  white-space: nowrap;
+}
+
+.slice-info-source {
+  font-size: 11px;
+  margin: -4px 0 8px;
+}
+
 .tag-input-field {
   border: none;
   padding: 4px 2px;

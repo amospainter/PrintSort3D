@@ -66,6 +66,7 @@ import {
   parsePlateSize,
   computePlateNames,
   computePlateBuildIndices,
+  computePlateInfo,
 } from './threeMf';
 
 const tmpFiles: string[] = [];
@@ -411,6 +412,37 @@ describe('computePlateBuildIndices', () => {
     fs.writeFileSync(filePath, 'not a zip');
     tmpFiles.push(filePath);
     expect(computePlateBuildIndices(filePath)).toEqual(new Map());
+  });
+});
+
+describe('computePlateInfo (combined single-parse)', () => {
+  it('returns the same build-index and name maps as the two separate functions', () => {
+    const file = writeFixtureZip([
+      {
+        name: 'Metadata/model_settings.config',
+        content:
+          `<config>\n${plateBlock(1, [10, 20]).replace('<plate>', '<plate>\n<metadata key="plater_name" value="Body"/>')}\n` +
+          `${plateBlock(2, [30])}\n</config>`,
+      },
+      { name: '3D/3dmodel.model', content: buildModelXml([30, 10, 20]) },
+    ]);
+
+    const combined = computePlateInfo(file);
+    expect(combined.buildIndices).toEqual(computePlateBuildIndices(file));
+    expect(combined.names).toEqual(computePlateNames(file));
+    expect(combined.names).toEqual(new Map([[1, 'Body']]));
+  });
+
+  it('still returns names when 3D/3dmodel.model is missing (build indices just empty)', () => {
+    const file = writeFixtureZip([
+      {
+        name: 'Metadata/model_settings.config',
+        content: `<config>\n${plateBlock(1, [10]).replace('<plate>', '<plate>\n<metadata key="plater_name" value="Solo"/>')}\n</config>`,
+      },
+    ]);
+    const info = computePlateInfo(file);
+    expect(info.names).toEqual(new Map([[1, 'Solo']]));
+    expect(info.buildIndices).toEqual(new Map());
   });
 });
 

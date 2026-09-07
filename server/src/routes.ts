@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { db } from './db';
 import { loadConfig, saveConfig, RootConfig, PlateSize } from './config';
-import { runScan, rescanFile } from './scanner';
+import { runScan, rescanFile, isScanning } from './scanner';
 import { ASSETS_DIR } from './paths';
 import { deleteCachedImages, thumbnailFilePath, BAKED_MESH_FILENAME } from './assets';
 import { listArchiveModelEntries, readArchiveEntry } from './archive';
@@ -37,6 +37,7 @@ interface FileRow {
   plates_json: string | null;
   plate_size_json: string | null;
   mesh_path: string | null;
+  slice_info_json: string | null;
   root_label?: string;
   root_path?: string;
   tags?: string;
@@ -75,7 +76,7 @@ function findDuplicates(row: FileRow): DuplicateRow[] {
   return results;
 }
 
-function serializeFile(row: FileRow, defaultPlateSize: PlateSize) {
+function serializeFile(row: FileRow, defaultPlateSize: PlateSize, opts: { summary?: boolean } = {}) {
   const parsedPlateSize = row.plate_size_json
     ? (JSON.parse(row.plate_size_json) as PlateSize)
     : null;
@@ -97,7 +98,11 @@ function serializeFile(row: FileRow, defaultPlateSize: PlateSize) {
       ? (JSON.parse(row.filaments_json) as { color: string; type: string | null }[])
       : [],
     layerHeight: row.layer_height,
-    slicerMetadata: row.slicer_metadata_json ? JSON.parse(row.slicer_metadata_json) : null,
+    // The raw slicer-settings blob is large (can be 40-50 KB per 3MF) and only the Detail
+    // page reads it, so list responses omit it entirely — see LIST_QUERY.
+    ...(opts.summary
+      ? {}
+      : { slicerMetadata: row.slicer_metadata_json ? JSON.parse(row.slicer_metadata_json) : null }),
     embeddedImages: row.embedded_images_json
       ? (JSON.parse(row.embedded_images_json) as string[]).map((name) => `/api/assets/${row.id}/${name}`)
       : [],
@@ -125,6 +130,10 @@ function serializeFile(row: FileRow, defaultPlateSize: PlateSize) {
           name: p.name,
         }))
       : [],
+    // Bambu/Orca slicing result (Metadata/slice_info.config): print time, filament weight/
+    // length, printer model, supports. null for non-3MF, unsliced, or PrusaSlicer files.
+    // Small enough to include in list responses (card badges + sorting).
+    sliceInfo: row.slice_info_json ? JSON.parse(row.slice_info_json) : null,
     // Actual declared plate footprint when known (Bambu/Orca 3MF), else the app-wide default
     // so the viewer always has a bed to draw. `plateSizeSource` lets the UI show which it is.
     bedSize: parsedPlateSize ?? { ...defaultPlateSize },
@@ -146,10 +155,29 @@ const DUPLICATE_MATCH_SQL = `
   (f.geometry_hash IS NOT NULL AND f2.geometry_hash = f.geometry_hash)
 `;
 
-const BASE_QUERY = `
-  SELECT f.*, r.label as root_label, r.path as root_path,
+const TAGS_AND_DUPES = `
     (SELECT GROUP_CONCAT(t.name, '||') FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id) as tags,
     (SELECT COUNT(*) FROM files f2 WHERE f2.id != f.id AND (${DUPLICATE_MATCH_SQL})) as duplicate_count
+`;
+
+// Detail / single-file responses: every column, including the big slicer_metadata_json blob.
+const BASE_QUERY = `
+  SELECT f.*, r.label as root_label, r.path as root_path,
+${TAGS_AND_DUPES}
+  FROM files f JOIN roots r ON r.id = f.root_id
+`;
+
+// List responses: every column the Library UI needs, but NOT slicer_metadata_json — that
+// blob was measured at ~96% of a list payload and is only read by the Detail page.
+const LIST_QUERY = `
+  SELECT
+    f.id, f.root_id, f.relative_path, f.filename, f.ext, f.size_bytes, f.mtime, f.added_at,
+    f.notes, f.thumbnail_path, f.missing, f.filament_type, f.filament_color, f.filaments_json,
+    f.layer_height, f.embedded_images_json, f.dimension_x, f.dimension_y, f.dimension_z,
+    f.content_hash, f.geometry_hash, f.archive_entry_count, f.plates_json, f.plate_size_json,
+    f.mesh_path, f.slice_info_json,
+    r.label as root_label, r.path as root_path,
+${TAGS_AND_DUPES}
   FROM files f JOIN roots r ON r.id = f.root_id
 `;
 
@@ -157,7 +185,7 @@ const DEFAULT_PAGE_SIZE = 60;
 const MAX_PAGE_SIZE = 200;
 
 router.get('/files', (req, res) => {
-  const { query, tags, ext, sort, duplicatesOnly, root, folder } = req.query as Record<
+  const { query, tags, ext, sort, duplicatesOnly, missingOnly, root, folder } = req.query as Record<
     string,
     string | undefined
   >;
@@ -203,16 +231,26 @@ router.get('/files', (req, res) => {
   if (duplicatesOnly === '1' || duplicatesOnly === 'true') {
     clauses.push(`EXISTS (SELECT 1 FROM files f2 WHERE f2.id != f.id AND (${DUPLICATE_MATCH_SQL}))`);
   }
+  if (missingOnly === '1' || missingOnly === 'true') {
+    clauses.push('f.missing = 1');
+  }
 
   const whereClause = clauses.length > 0 ? ' WHERE ' + clauses.join(' AND ') : '';
 
-  const sortMap: Record<string, string> = {
-    name: 'f.filename',
-    size: 'f.size_bytes',
-    added: 'f.added_at',
-    mtime: 'f.mtime',
+  const sortMap: Record<string, { col: string; defaultDir: 'ASC' | 'DESC' }> = {
+    name: { col: 'f.filename', defaultDir: 'ASC' },
+    size: { col: 'f.size_bytes', defaultDir: 'DESC' },
+    added: { col: 'f.added_at', defaultDir: 'DESC' },
+    mtime: { col: 'f.mtime', defaultDir: 'DESC' },
+    // Print estimates live in slice_info_json (Bambu/Orca sliced 3MFs only). Files without
+    // it sort as NULL — last under DESC ("longest print first"), which is the useful default.
+    printTime: { col: "json_extract(f.slice_info_json, '$.printTimeSeconds')", defaultDir: 'DESC' },
+    filament: { col: "json_extract(f.slice_info_json, '$.filamentWeightGrams')", defaultDir: 'DESC' },
   };
-  const sortCol = sortMap[sort ?? 'added'] ?? 'f.added_at';
+  const sortSpec = sortMap[sort ?? 'added'] ?? sortMap.added;
+  const dir = (req.query.dir as string | undefined)?.toUpperCase() === 'ASC' ? 'ASC' : (req.query.dir as string | undefined)?.toUpperCase() === 'DESC' ? 'DESC' : sortSpec.defaultDir;
+  // Stable tiebreak so paging can't drop or repeat a row when the sort key ties.
+  const orderBy = `${sortSpec.col} ${dir}, f.id ${dir}`;
 
   const pageSize = Math.min(Math.max(1, Number(req.query.pageSize) || DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
   const page = Math.max(1, Number(req.query.page) || 1);
@@ -223,12 +261,12 @@ router.get('/files', (req, res) => {
     .get(...(params as (string | number)[])) as { count: number };
   const total = totalRow.count;
 
-  const sql = `${BASE_QUERY}${whereClause} ORDER BY ${sortCol} DESC LIMIT ? OFFSET ?`;
+  const sql = `${LIST_QUERY}${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
   const rows = db.prepare(sql).all(...(params as (string | number)[]), pageSize, offset) as unknown as FileRow[];
 
   const { defaultPlateSize } = loadConfig();
   res.json({
-    items: rows.map((r) => serializeFile(r, defaultPlateSize)),
+    items: rows.map((r) => serializeFile(r, defaultPlateSize, { summary: true })),
     total,
     page,
     pageSize,
@@ -249,6 +287,75 @@ router.get('/files/:id', (req, res) => {
       matchType: d.match_type,
     })),
   });
+});
+
+// Removes files flagged `missing` from the catalogue — the row, its tags, and its cached
+// assets. Never touches disk (a missing file has no disk presence anyway). `?root=<label>`
+// scopes it; otherwise every missing file across every root. Returns { removed: number }.
+router.post('/files/purge-missing', (req, res) => {
+  const rootLabel = (req.query.root as string | undefined) ?? (req.body as { root?: string } | undefined)?.root;
+  let rows: { id: number }[];
+  if (rootLabel) {
+    rows = db
+      .prepare(
+        'SELECT f.id FROM files f JOIN roots r ON r.id = f.root_id WHERE f.missing = 1 AND r.label = ?'
+      )
+      .all(rootLabel) as { id: number }[];
+  } else {
+    rows = db.prepare('SELECT id FROM files WHERE missing = 1').all() as { id: number }[];
+  }
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    for (const { id } of rows) {
+      db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(id);
+      db.prepare('DELETE FROM files WHERE id = ?').run(id);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* no active transaction */
+    }
+    console.error('purge-missing failed:', err);
+    return res.status(500).json({ error: 'purge failed', message: err instanceof Error ? err.message : String(err) });
+  }
+
+  // Asset teardown is outside the transaction — it's filesystem work, and a row that's
+  // already gone from the DB with a leftover asset dir is harmless (the startup prune and
+  // the next purge both mop it up).
+  for (const { id } of rows) deleteCachedImages(id);
+
+  res.json({ removed: rows.length });
+});
+
+// Removes a single missing file from the catalogue (row + tags + cached assets). 409 if the
+// file isn't flagged missing — deleting a present file just invites it back on the next scan.
+router.delete('/files/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid id' });
+  const row = db.prepare('SELECT missing FROM files WHERE id = ?').get(id) as { missing: number } | undefined;
+  if (!row) return res.status(404).json({ error: 'not found' });
+  if (!row.missing) {
+    return res.status(409).json({ error: 'file is present on disk; only missing files can be removed from the catalogue' });
+  }
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(id);
+    db.prepare('DELETE FROM files WHERE id = ?').run(id);
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* no active transaction */
+    }
+    return res.status(500).json({ error: 'delete failed', message: err instanceof Error ? err.message : String(err) });
+  }
+  deleteCachedImages(id);
+  res.json({ ok: true });
 });
 
 router.patch('/files/:id', (req, res) => {
@@ -394,6 +501,10 @@ router.delete('/tags/:name', (req, res) => {
   res.json({ ok: true });
 });
 
+router.get('/scan/status', (_req, res) => {
+  res.json({ scanning: isScanning() });
+});
+
 router.post('/scan', async (req, res) => {
   try {
     // Optional `{ root: <label> }` scopes the scan to one watched folder; omitted = whole catalog.
@@ -486,8 +597,38 @@ router.get('/roots', (_req, res) => {
 });
 
 router.put('/roots', (req, res) => {
+  // A deployment that owns its roots (Docker mounts, a locked-down host) can forbid editing
+  // the watched-folder list entirely — managed roots already can't be removed, but this also
+  // stops a caller *adding* an arbitrary server-readable path and reading files back out.
+  if (/^(1|true|yes)$/i.test(process.env.PRINTSORT_ROOTS_LOCKED ?? '')) {
+    return res.status(403).json({ error: 'watched folders are locked by the deployment' });
+  }
+
   const roots = req.body as RootConfig[];
   if (!Array.isArray(roots)) return res.status(400).json({ error: 'expected an array of roots' });
+
+  const normPath = (p: string) => path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+  const knownPaths = new Set(loadConfig().roots.map((r) => normPath(r.path)));
+
+  for (const r of roots) {
+    if (!r || typeof r.label !== 'string' || typeof r.path !== 'string' || !r.label.trim() || !r.path.trim()) {
+      return res.status(400).json({ error: 'each root needs a non-empty label and path' });
+    }
+    if (!path.isAbsolute(r.path)) {
+      return res.status(400).json({ error: `root path must be absolute: ${r.path}` });
+    }
+    // A newly-added root must exist and be a directory. An already-configured root whose
+    // drive is temporarily offline is left alone — only paths that were never valid are rejected.
+    if (!knownPaths.has(normPath(r.path))) {
+      let isDir = false;
+      try {
+        isDir = fs.statSync(r.path).isDirectory();
+      } catch {
+        /* missing */
+      }
+      if (!isDir) return res.status(400).json({ error: `not a directory: ${r.path}` });
+    }
+  }
 
   // A root dropped from the list is gone for good (the user removed it deliberately),
   // so its catalog entries are deleted here rather than left to linger forever —
@@ -592,7 +733,11 @@ function resolveFilePath(id: number): ResolvedFile | { error: 'not found' | 'inv
 
   const rootResolved = path.resolve(row.root_path);
   const fullPath = path.resolve(rootResolved, row.relative_path);
-  if (!fullPath.startsWith(rootResolved)) return { error: 'invalid path' };
+  // Boundary check, not a bare prefix: `startsWith(root)` alone would accept a sibling like
+  // `<root>-backup/...`. The path must BE the root or sit under `<root><sep>`.
+  if (fullPath !== rootResolved && !fullPath.startsWith(rootResolved + path.sep)) {
+    return { error: 'invalid path' };
+  }
   if (!fs.existsSync(fullPath)) return { error: 'missing on disk' };
 
   return { fullPath, ext: row.ext };

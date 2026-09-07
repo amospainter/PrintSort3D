@@ -246,6 +246,39 @@ describe('files pagination', () => {
   });
 });
 
+describe('removing missing files', () => {
+  it('DELETE /api/files/:id removes a missing file but refuses a present one', async () => {
+    fs.writeFileSync(path.join(filesDir, 'to-delete.stl'), 'solid d\nendsolid d\n');
+    await runScan();
+    const id = (await request(app).get('/api/files?query=to-delete')).body.items[0].id;
+
+    // Present → 409
+    expect((await request(app).delete(`/api/files/${id}`)).status).toBe(409);
+
+    fs.unlinkSync(path.join(filesDir, 'to-delete.stl'));
+    await runScan();
+    expect((await request(app).delete(`/api/files/${id}`)).status).toBe(200);
+    expect((await request(app).get(`/api/files/${id}`)).status).toBe(404);
+  });
+
+  it('POST /api/files/purge-missing clears every missing file and reports the count', async () => {
+    fs.writeFileSync(path.join(filesDir, 'purge-a.stl'), 'solid pa\nendsolid pa\n');
+    fs.writeFileSync(path.join(filesDir, 'purge-b.stl'), 'solid pb\nendsolid pb\n');
+    await runScan();
+    fs.unlinkSync(path.join(filesDir, 'purge-a.stl'));
+    fs.unlinkSync(path.join(filesDir, 'purge-b.stl'));
+    await runScan();
+
+    const before = (await request(app).get('/api/files?missingOnly=1&pageSize=1')).body.total;
+    expect(before).toBeGreaterThanOrEqual(2);
+
+    const res = await request(app).post('/api/files/purge-missing');
+    expect(res.status).toBe(200);
+    expect(res.body.removed).toBe(before);
+    expect((await request(app).get('/api/files?missingOnly=1&pageSize=1')).body.total).toBe(0);
+  });
+});
+
 describe('folder routes', () => {
   beforeAll(async () => {
     const nested = path.join(filesDir, 'vehicles', 'cars');
@@ -408,6 +441,60 @@ describe('embedded 3mf images / asset routes', () => {
       { color: '#AABBCC', type: 'PLA' },
       { color: '#112233', type: 'PETG' },
     ]);
+  });
+
+  it('serializes slice_info.config as file.sliceInfo and sorts by print time', async () => {
+    const mk = (name: string, prediction: number, weight: number) => {
+      const zip = new AdmZip();
+      zip.addFile('Metadata/plate_1.png', onePixelPng);
+      zip.addFile(
+        'Metadata/slice_info.config',
+        Buffer.from(
+          `<config><plate><metadata key="index" value="1"/>` +
+            `<metadata key="prediction" value="${prediction}"/>` +
+            `<metadata key="weight" value="${weight}"/>` +
+            `<filament id="1" type="PLA" color="#000" used_m="1" used_g="${weight}"/>` +
+            `</plate></config>`
+        )
+      );
+      zip.writeZip(path.join(filesDir, name));
+    };
+    mk('slice-short.3mf', 600, 5);
+    mk('slice-long.3mf', 7200, 40);
+    await runScan();
+
+    const short = (await request(app).get('/api/files?query=slice-short')).body.items[0];
+    expect(short.sliceInfo.printTimeSeconds).toBe(600);
+    expect(short.sliceInfo.filamentWeightGrams).toBe(5);
+
+    // Sorted by print time, descending by default: the long one comes before the short one.
+    const sorted = (await request(app).get('/api/files?query=slice-&sort=printTime')).body.items.map(
+      (f: { filename: string }) => f.filename
+    );
+    expect(sorted.indexOf('slice-long.3mf')).toBeLessThan(sorted.indexOf('slice-short.3mf'));
+
+    // dir=asc flips it.
+    const asc = (await request(app).get('/api/files?query=slice-&sort=printTime&dir=asc')).body.items.map(
+      (f: { filename: string }) => f.filename
+    );
+    expect(asc.indexOf('slice-short.3mf')).toBeLessThan(asc.indexOf('slice-long.3mf'));
+  });
+
+  it('omits the large slicerMetadata blob from list responses but keeps it on the detail route', async () => {
+    const zip = new AdmZip();
+    zip.addFile('Metadata/plate_1.png', onePixelPng);
+    zip.addFile(
+      'Metadata/project_settings.config',
+      Buffer.from(JSON.stringify({ filament_type: ['PLA'], some_big_setting: 'x'.repeat(1000) }))
+    );
+    zip.writeZip(path.join(filesDir, 'blob.3mf'));
+    await runScan();
+
+    const listItem = (await request(app).get('/api/files?query=blob')).body.items[0];
+    expect(listItem.slicerMetadata).toBeUndefined();
+
+    const detail = await request(app).get(`/api/files/${listItem.id}`);
+    expect(detail.body.slicerMetadata.some_big_setting).toHaveLength(1000);
   });
 
   it('rejects non-webp / path-traversal-looking asset filenames', async () => {

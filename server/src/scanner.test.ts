@@ -64,9 +64,28 @@ function writeBinaryStlWithKnownSize(name: string, size: [number, number, number
   fs.writeFileSync(path.join(filesDir, name), buf);
 }
 
-function writeBambu3mf(name: string, imageBuffer: Buffer = Buffer.from('fake-png-bytes')) {
+function writeBambu3mf(
+  name: string,
+  imageBuffer: Buffer = Buffer.from('fake-png-bytes'),
+  opts: { sliceInfo?: boolean } = {}
+) {
   const zip = new AdmZip();
   zip.addFile('Metadata/plate_1.png', imageBuffer);
+  if (opts.sliceInfo) {
+    zip.addFile(
+      'Metadata/slice_info.config',
+      Buffer.from(
+        '<config><plate>' +
+          '<metadata key="index" value="1"/>' +
+          '<metadata key="printer_model_id" value="C11"/>' +
+          '<metadata key="prediction" value="4192"/>' +
+          '<metadata key="weight" value="15.99"/>' +
+          '<metadata key="support_used" value="false"/>' +
+          '<filament id="1" type="PLA" color="#000000" used_m="5.29" used_g="15.99"/>' +
+          '</plate></config>'
+      )
+    );
+  }
   zip.addFile(
     'Metadata/project_settings.config',
     Buffer.from(
@@ -146,6 +165,24 @@ describe('runScan', () => {
       { color: '#FF0000', type: 'ABS' },
       { color: '#00FF00', type: 'PLA' },
     ]);
+  });
+
+  it('extracts slice_info.config (print time, filament weight) into slice_info_json', async () => {
+    writeBambu3mf('sliced.3mf', ONE_PIXEL_PNG, { sliceInfo: true });
+
+    await runScan();
+
+    const row = db.prepare('SELECT * FROM files WHERE filename = ?').get('sliced.3mf') as any;
+    const info = JSON.parse(row.slice_info_json);
+    expect(info.printTimeSeconds).toBe(4192);
+    expect(info.filamentWeightGrams).toBe(15.99);
+    expect(info.printerModelId).toBe('C11');
+
+    // A 3MF with no slice_info.config leaves the column null.
+    writeBambu3mf('unsliced.3mf', ONE_PIXEL_PNG);
+    await runScan();
+    const bare = db.prepare('SELECT slice_info_json FROM files WHERE filename = ?').get('unsliced.3mf') as any;
+    expect(bare.slice_info_json).toBeNull();
   });
 
   it('bakes a gzipped render mesh (mesh.bin.gz) with folded-in paint for a painted 3mf', async () => {
@@ -463,5 +500,51 @@ describe('runScan', () => {
     expect(result.missing).toBe(0);
     const row = db.prepare('SELECT missing FROM files WHERE filename = ?').get('cube.stl') as any;
     expect(row.missing).toBe(0);
+  });
+
+  it('does not flag a whole root missing when its path becomes unreachable', async () => {
+    const offlineDir = path.join(tmpRoot, 'offline-root');
+    fs.mkdirSync(offlineDir, { recursive: true });
+    fs.writeFileSync(path.join(offlineDir, 'a.stl'), 'solid a\nendsolid a\n');
+    fs.writeFileSync(path.join(offlineDir, 'b.stl'), 'solid b\nendsolid b\n');
+    saveConfig({
+      roots: [
+        { label: 'Test Root', path: filesDir },
+        { label: 'Removable', path: offlineDir },
+      ],
+    });
+    await runScan();
+    expect(db.prepare("SELECT COUNT(*) c FROM files f JOIN roots r ON r.id=f.root_id WHERE r.label='Removable'").get()).toEqual({ c: 2 });
+
+    // "Unplug" the drive.
+    fs.rmSync(offlineDir, { recursive: true, force: true });
+    const result = await runScan();
+
+    const stillThere = db
+      .prepare("SELECT missing FROM files f JOIN roots r ON r.id=f.root_id WHERE r.label='Removable'")
+      .all() as { missing: number }[];
+    expect(stillThere).toHaveLength(2);
+    expect(stillThere.every((r) => r.missing === 0)).toBe(true);
+    expect(result.missing).toBe(0);
+
+    saveConfig({ roots: [{ label: 'Test Root', path: filesDir }] });
+    await runScan();
+  });
+
+  it('follows a symlinked subdirectory', async () => {
+    const realDir = path.join(tmpRoot, 'linked-target');
+    fs.mkdirSync(realDir, { recursive: true });
+    fs.writeFileSync(path.join(realDir, 'via-symlink.stl'), 'solid s\nendsolid s\n');
+    try {
+      fs.symlinkSync(realDir, path.join(filesDir, 'linked'), 'junction');
+    } catch {
+      return; // no permission to create links on this box — skip
+    }
+
+    await runScan();
+    expect(db.prepare('SELECT id FROM files WHERE filename = ?').get('via-symlink.stl')).toBeTruthy();
+
+    fs.rmSync(path.join(filesDir, 'linked'), { recursive: true, force: true });
+    await runScan();
   });
 });

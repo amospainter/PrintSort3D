@@ -7,6 +7,7 @@ import AdmZip from 'adm-zip';
 let tmpRoot: string;
 let cacheThreeMfImages: typeof import('./assets').cacheThreeMfImages;
 let deleteCachedImages: typeof import('./assets').deleteCachedImages;
+let pruneOrphanAssets: typeof import('./assets').pruneOrphanAssets;
 
 const ONE_PIXEL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -16,7 +17,7 @@ const ONE_PIXEL_PNG = Buffer.from(
 beforeAll(async () => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-assets-test-'));
   process.env.ASSETS_DIR = path.join(tmpRoot, 'assets');
-  ({ cacheThreeMfImages, deleteCachedImages } = await import('./assets'));
+  ({ cacheThreeMfImages, deleteCachedImages, pruneOrphanAssets } = await import('./assets'));
 });
 
 const tmpFiles: string[] = [];
@@ -84,5 +85,30 @@ describe('deleteCachedImages', () => {
 
   it('does not throw when the directory does not exist', () => {
     expect(() => deleteCachedImages(999999)).not.toThrow();
+  });
+});
+
+describe('pruneOrphanAssets', () => {
+  it('removes asset directories whose id is not in the live set, leaving live ones and non-numeric dirs', async () => {
+    const assetsDir = process.env.ASSETS_DIR!;
+    fs.mkdirSync(path.join(assetsDir, '201'), { recursive: true });
+    fs.mkdirSync(path.join(assetsDir, '202'), { recursive: true });
+    fs.mkdirSync(path.join(assetsDir, 'not-a-number'), { recursive: true });
+    fs.writeFileSync(path.join(assetsDir, '201', 'thumbnail.png'), 'x');
+
+    // Keep every numeric dir currently on disk except 201, so this test's assertions don't
+    // depend on what other tests in this file left behind.
+    const keep = new Set(
+      fs
+        .readdirSync(assetsDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && /^\d+$/.test(e.name) && e.name !== '201')
+        .map((e) => Number(e.name))
+    );
+    const removed = pruneOrphanAssets(keep);
+
+    expect(removed).toBe(1);
+    expect(fs.existsSync(path.join(assetsDir, '201'))).toBe(false);
+    expect(fs.existsSync(path.join(assetsDir, '202'))).toBe(true);
+    expect(fs.existsSync(path.join(assetsDir, 'not-a-number'))).toBe(true);
   });
 });

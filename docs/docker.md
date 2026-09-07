@@ -49,6 +49,22 @@ can still add extra folders by hand in Settings — those persist to `/data/conf
 | `PRINTSORT_MODELS_DIR` | `/models` | Each immediate subdirectory becomes a watched source. Set empty to disable auto-discovery. |
 | `PRINTSORT_ROOTS` | *(unset)* | Explicit list, `;`- or newline-separated, each entry `Label=/path` or just `/path`. Combined with the above. |
 | `SCAN_ON_STARTUP` | `true` | Scan every source once when the server starts. Set `false` to only scan from the UI. |
+| `HOST` | `0.0.0.0` (in image) | Interface the server binds. The image binds all interfaces so the published port works; how exposed that actually is depends on your `ports:` / `-p` mapping. |
+
+### Access control
+
+The API has **no authentication by default**. `docker-compose.yml` publishes the port on
+`127.0.0.1` only, so out of the box it's reachable just from the Docker host. To expose it on
+your network, change the `ports:` mapping to `"3001:3001"` **and** set one or more of:
+
+| Var | Effect |
+|---|---|
+| `PRINTSORT_PASSWORD` | HTTP Basic auth on every request (browser prompts; no client setup). |
+| `PRINTSORT_READONLY=1` | Reject all catalogue edits — browse-only. |
+| `PRINTSORT_ROOTS_LOCKED=1` | Forbid changing the watched-folder list via the API (the mounts already own it). |
+| `PRINTSORT_CORS_ORIGINS` | Comma-separated allowlist, only if a browser app on another origin calls the API. |
+
+A cross-origin CSRF guard is always on. See [api.md](api.md#access-control).
 
 ## docker compose (recommended)
 
@@ -75,7 +91,7 @@ To build the image from a checkout instead of pulling it, comment the `image:` l
 
 ```sh
 docker run -d --name printsort3d \
-  -p 3001:3001 \
+  -p 127.0.0.1:3001:3001 \
   -v printsort3d-data:/data \
   -v /srv/3d-prints:/models/prints:ro \
   -v /srv/downloads/stl:/models/downloads:ro \

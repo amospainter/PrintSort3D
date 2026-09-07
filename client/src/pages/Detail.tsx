@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api, type ArchiveEntry, type FileEntry, type TagInfo } from '../api';
 import { ModelViewer } from '../ModelViewer';
 import { ImageLightbox } from '../ImageLightbox';
@@ -51,6 +51,20 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// "4h 22m", "18m", "45s" — matches how slicers present a print-time estimate.
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return `${m}m`;
+  return `${Math.round(seconds)}s`;
+}
+
+function formatGrams(g: number): string {
+  return g >= 1000 ? `${(g / 1000).toFixed(2)} kg` : `${g.toFixed(g < 10 ? 1 : 0)} g`;
 }
 
 function formatDate(ms: number): string {
@@ -118,6 +132,7 @@ function ArchiveViewer({ fileId }: { fileId: number }) {
 
 export default function Detail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const fileId = Number(id);
   const [file, setFile] = useState<FileEntry | null>(null);
   const [arrayBuffer, setArrayBuffer] = useState<ArrayBuffer | null>(null);
@@ -134,7 +149,11 @@ export default function Detail() {
   const [activePlateIndex, setActivePlateIndex] = useState<number | null>(null);
   const [rescanning, setRescanning] = useState(false);
   const [rescanMessage, setRescanMessage] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [painted, setPainted] = useState(false);
+  // Stable identity so ModelViewer's paint effect doesn't re-run on every Detail render
+  // (typing in Notes / Tags re-renders and would otherwise re-apply paint each keystroke).
+  const filamentColors = useMemo(() => file?.filaments.map((f) => f.color) ?? [], [file]);
   // "Load full model": swap the fast server-baked mesh for the raw source file parsed
   // in-browser (three.js's own STL/OBJ/3MF loaders) — an escape hatch for when the bake
   // looks wrong. Small source files (< FULL_MODEL_AUTO_BYTES) parse in-browser fast enough
@@ -143,17 +162,34 @@ export default function Detail() {
   const [loadFull, setLoadFull] = useState(false);
 
   useEffect(() => {
-    api.getFile(fileId).then((f) => {
-      setFile(f);
-      setNotes(f.notes);
-      setTagDraft(f.tags);
-      setPendingTag('');
-      setActivePlateIndex(null); // "All plates" by default — matches the pre-plate-switcher 3D view
-      setLoadFull(f.ext !== '.zip' && f.sizeBytes > 0 && f.sizeBytes < FULL_MODEL_AUTO_BYTES);
-      setArrayBuffer(null);
-    });
+    let cancelled = false;
+    setFile(null);
+    setLoadError(null);
+    api
+      .getFile(fileId)
+      .then((f) => {
+        if (cancelled) return;
+        setFile(f);
+        setNotes(f.notes);
+        setTagDraft(f.tags);
+        setPendingTag('');
+        setActivePlateIndex(null); // "All plates" by default — matches the pre-plate-switcher 3D view
+        setLoadFull(f.ext !== '.zip' && f.sizeBytes > 0 && f.sizeBytes < FULL_MODEL_AUTO_BYTES);
+        setArrayBuffer(null);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Could not load this file');
+      });
     api.listTags().then(setAllTags);
+    return () => {
+      cancelled = true;
+    };
   }, [fileId]);
+
+  const removeFromCatalogue = () => {
+    if (!window.confirm('Remove this missing file from the catalogue? Its tags and notes are lost. The file on disk (if it comes back) is not touched.')) return;
+    api.deleteFile(fileId).then(() => navigate('/'));
+  };
 
   const rescan = () => {
     setRescanning(true);
@@ -178,9 +214,18 @@ export default function Detail() {
     if (!file || file.ext === '.zip') return;
     if (file.meshUrl && !(loadFull && !painted)) return; // baked mesh covers this case
     if (arrayBuffer) return;
+    let cancelled = false;
     fetch(api.rawFileUrl(fileId))
       .then((res) => (res.ok ? res.arrayBuffer() : null))
-      .then(setArrayBuffer);
+      .then((buf) => {
+        if (!cancelled) setArrayBuffer(buf);
+      })
+      .catch(() => {
+        if (!cancelled) setArrayBuffer(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [fileId, file, loadFull, painted, arrayBuffer]);
 
   const activePlate = useMemo(
@@ -215,6 +260,17 @@ export default function Detail() {
       .finally(() => setSaving(false));
   };
 
+  if (loadError)
+    return (
+      <div>
+        <Link to="/" className="detail-back">
+          <ChevronLeftIcon /> Library
+        </Link>
+        <p className="danger-text" style={{ marginTop: 16 }}>
+          Couldn’t load this file: {loadError}
+        </p>
+      </div>
+    );
   if (!file) return <p>Loading...</p>;
 
   return (
@@ -238,6 +294,11 @@ export default function Detail() {
             <DownloadIcon /> Download to open
           </a>
         )}
+        {file.missing && (
+          <button type="button" className="rescan-button" onClick={removeFromCatalogue}>
+            Remove from catalogue
+          </button>
+        )}
       </div>
       {rescanMessage && <p className="muted rescan-status">{rescanMessage}</p>}
 
@@ -259,7 +320,7 @@ export default function Detail() {
                     visibleChildIndices={visibleChildIndices}
                     plates={file.plates}
                     bedSize={file.bedSize}
-                    filamentColors={file.filaments.map((f) => f.color)}
+                    filamentColors={filamentColors}
                     painted={painted}
                   />
                   <div className="viewer-hint">
@@ -383,6 +444,60 @@ export default function Detail() {
               </div>
             )}
           </section>
+
+          {file.sliceInfo && (
+            <section className="details-section">
+              <h3>Print estimates</h3>
+              <p className="muted slice-info-source">From the slicer (slice_info.config)</p>
+              {file.sliceInfo.printTimeSeconds != null && (
+                <div className="details-row">
+                  <span className="muted">Print time</span>
+                  <span>{formatDuration(file.sliceInfo.printTimeSeconds)}</span>
+                </div>
+              )}
+              {file.sliceInfo.filamentWeightGrams != null && (
+                <div className="details-row">
+                  <span className="muted">Filament</span>
+                  <span>
+                    {formatGrams(file.sliceInfo.filamentWeightGrams)}
+                    {file.sliceInfo.filamentLengthMeters != null &&
+                      ` · ${file.sliceInfo.filamentLengthMeters.toFixed(2)} m`}
+                  </span>
+                </div>
+              )}
+              {file.sliceInfo.supportUsed != null && (
+                <div className="details-row">
+                  <span className="muted">Supports</span>
+                  <span>{file.sliceInfo.supportUsed ? 'Yes' : 'No'}</span>
+                </div>
+              )}
+              {file.sliceInfo.printerModelId && (
+                <div className="details-row">
+                  <span className="muted">Sliced for</span>
+                  <span>
+                    {file.sliceInfo.printerModelId}
+                    {file.sliceInfo.nozzleDiameterMm != null &&
+                      ` · ${file.sliceInfo.nozzleDiameterMm} mm nozzle`}
+                  </span>
+                </div>
+              )}
+              {file.sliceInfo.plates.length > 1 && (
+                <div className="details-row">
+                  <span className="muted">Plates</span>
+                  <span>
+                    {file.sliceInfo.plates
+                      .map(
+                        (p) =>
+                          `#${p.index ?? '?'}: ${
+                            p.printTimeSeconds != null ? formatDuration(p.printTimeSeconds) : '—'
+                          }`
+                      )
+                      .join(', ')}
+                  </span>
+                </div>
+              )}
+            </section>
+          )}
 
           <section>
             <h3>Tags</h3>

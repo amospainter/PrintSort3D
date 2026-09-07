@@ -16,7 +16,31 @@ export type TriangleCallback = (
 
 const ASCII_VERTEX_RE = /vertex\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)/g;
 
-function walkStlVertices(buffer: Buffer, onVertex: VertexCallback): boolean {
+// V8 caps a single string at ~512 MB (~256 MB on 32-bit). A genuinely huge ASCII STL — raw
+// 3D-scan output can be — would throw inside buffer.toString() and get silently swallowed as
+// "no geometry". Turn that into a diagnosable decode rather than a mystery null.
+function bufferToTextOrWarn(buffer: Buffer, filePath: string): string | null {
+  try {
+    return buffer.toString('utf-8');
+  } catch (err) {
+    console.warn(
+      `geometryParse: ${filePath} is too large to parse as text (${buffer.length} bytes) — ` +
+        `dimensions/geometry-hash will be null. ${err instanceof Error ? err.message : ''}`
+    );
+    return null;
+  }
+}
+
+// Binary STLs whose declared triangle count doesn't match their byte length are either
+// truncated or padded. Reinterpreting those bytes as UTF-8 and regexing for "vertex" can
+// match random binary and produce nonsense — so only take the ASCII path when the file
+// actually starts with "solid" (after leading whitespace).
+function looksLikeAsciiStl(buffer: Buffer): boolean {
+  const head = buffer.subarray(0, 64).toString('latin1').trimStart().toLowerCase();
+  return head.startsWith('solid');
+}
+
+function walkStlVertices(buffer: Buffer, onVertex: VertexCallback, filePath: string): boolean {
   let found = false;
 
   // A binary STL is exactly 84 + 50*triangleCount bytes. If that arithmetic checks out,
@@ -38,7 +62,9 @@ function walkStlVertices(buffer: Buffer, onVertex: VertexCallback): boolean {
     }
   }
 
-  const text = buffer.toString('utf-8');
+  if (!looksLikeAsciiStl(buffer)) return false;
+  const text = bufferToTextOrWarn(buffer, filePath);
+  if (text === null) return false;
   let match: RegExpExecArray | null;
   ASCII_VERTEX_RE.lastIndex = 0;
   while ((match = ASCII_VERTEX_RE.exec(text)) !== null) {
@@ -112,7 +138,7 @@ function walkThreeMfVertices(filePath: string, onVertex: VertexCallback): boolea
   return found;
 }
 
-function walkStlTriangles(buffer: Buffer, onTri: TriangleCallback): boolean {
+function walkStlTriangles(buffer: Buffer, onTri: TriangleCallback, filePath: string): boolean {
   let found = false;
 
   if (buffer.length >= 84) {
@@ -138,7 +164,9 @@ function walkStlTriangles(buffer: Buffer, onTri: TriangleCallback): boolean {
   }
 
   // ASCII: collect vertices in "facet ... outer loop / vertex*3 / endloop" order, three at a time.
-  const text = buffer.toString('utf-8');
+  if (!looksLikeAsciiStl(buffer)) return false;
+  const text = bufferToTextOrWarn(buffer, filePath);
+  if (text === null) return false;
   const coords: number[] = [];
   let match: RegExpExecArray | null;
   ASCII_VERTEX_RE.lastIndex = 0;
@@ -197,7 +225,7 @@ function walkObjTriangles(buffer: Buffer, onTri: TriangleCallback): boolean {
 export function forEachTriangle(filePath: string, ext: string, onTri: TriangleCallback): boolean {
   const normalizedExt = ext.toLowerCase();
   try {
-    if (normalizedExt === '.stl') return walkStlTriangles(fs.readFileSync(filePath), onTri);
+    if (normalizedExt === '.stl') return walkStlTriangles(fs.readFileSync(filePath), onTri, filePath);
     if (normalizedExt === '.obj') return walkObjTriangles(fs.readFileSync(filePath), onTri);
   } catch {
     return false;
@@ -215,7 +243,7 @@ export function forEachTriangle(filePath: string, ext: string, onTri: TriangleCa
 export function forEachVertex(filePath: string, ext: string, onVertex: VertexCallback): boolean {
   const normalizedExt = ext.toLowerCase();
   try {
-    if (normalizedExt === '.stl') return walkStlVertices(fs.readFileSync(filePath), onVertex);
+    if (normalizedExt === '.stl') return walkStlVertices(fs.readFileSync(filePath), onVertex, filePath);
     if (normalizedExt === '.obj') return walkObjVertices(fs.readFileSync(filePath), onVertex);
     if (normalizedExt === '.3mf') return walkThreeMfVertices(filePath, onVertex);
   } catch {

@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { db } from './db';
 import { loadConfig } from './config';
-import { extractThreeMfData, groupImagesByPlate, computePlateBuildIndices, computePlateNames } from './threeMf';
+import { extractThreeMfData, groupImagesByPlate, computePlateInfo } from './threeMf';
+import { extractSliceInfo } from './sliceInfo';
 import { cacheThreeMfImages, cacheBakedMeshParts, saveThumbnail } from './assets';
 import { computeDimensions } from './dimensions';
 import { computeContentHash, computeGeometryHash } from './fingerprint';
@@ -20,9 +21,20 @@ const SUPPORTED_EXTS = new Set(['.stl', '.3mf', '.obj', '.zip']);
 // disk. Legitimately-empty results (a file with no parseable geometry) still stop being
 // reprocessed once caught up, unlike inferring "needs backfill" from a nullable column, which
 // would retry forever for such files.
-const CURRENT_SCANNER_VERSION = 10;
+const CURRENT_SCANNER_VERSION = 11;
 
-function walk(dir: string, fileList: string[] = []): string[] {
+function walk(dir: string, fileList: string[] = [], seen: Set<string> = new Set()): string[] {
+  // A symlink loop (or two symlinks pointing at a shared ancestor) would recurse forever —
+  // track resolved directory paths and refuse to descend into one twice.
+  let real: string;
+  try {
+    real = fs.realpathSync(dir);
+  } catch {
+    return fileList;
+  }
+  if (seen.has(real)) return fileList;
+  seen.add(real);
+
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -31,9 +43,22 @@ function walk(dir: string, fileList: string[] = []): string[] {
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      walk(full, fileList);
-    } else if (SUPPORTED_EXTS.has(path.extname(entry.name).toLowerCase())) {
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+    // `withFileTypes` reports a symlink as neither dir nor file — stat through it so junctions
+    // and symlinked folders (common on Windows and NAS setups) are still walked.
+    if (entry.isSymbolicLink()) {
+      try {
+        const st = fs.statSync(full);
+        isDir = st.isDirectory();
+        isFile = st.isFile();
+      } catch {
+        continue; // dangling link
+      }
+    }
+    if (isDir) {
+      walk(full, fileList, seen);
+    } else if (isFile && SUPPORTED_EXTS.has(path.extname(entry.name).toLowerCase())) {
       fileList.push(full);
     }
   }
@@ -76,8 +101,8 @@ async function apply3mfMetadata(fileId: number, fullPath: string): Promise<boole
   }
   const embeddedImages = await cacheThreeMfImages(fileId, fullPath);
   const plates = groupImagesByPlate(embeddedImages);
-  const buildIndicesByPlate = computePlateBuildIndices(fullPath);
-  const namesByPlate = computePlateNames(fullPath);
+  const { buildIndices: buildIndicesByPlate, names: namesByPlate } = computePlateInfo(fullPath);
+  const sliceInfo = extractSliceInfo(fullPath);
   for (const plate of plates) {
     const indices = buildIndicesByPlate.get(plate.index);
     if (indices) plate.buildItemIndices = indices;
@@ -87,7 +112,7 @@ async function apply3mfMetadata(fileId: number, fullPath: string): Promise<boole
 
   db.prepare(
     `UPDATE files SET thumbnail_path = ?, filament_type = ?, filament_color = ?, filaments_json = ?, layer_height = ?,
-     slicer_metadata_json = ?, embedded_images_json = ?, plates_json = ?, plate_size_json = ?
+     slicer_metadata_json = ?, embedded_images_json = ?, plates_json = ?, plate_size_json = ?, slice_info_json = ?
      WHERE id = ?`
   ).run(
     thumbPath,
@@ -99,6 +124,7 @@ async function apply3mfMetadata(fileId: number, fullPath: string): Promise<boole
     embeddedImages.length > 0 ? JSON.stringify(embeddedImages) : null,
     plates.length > 0 ? JSON.stringify(plates) : null,
     extracted.plateSize ? JSON.stringify(extracted.plateSize) : null,
+    sliceInfo ? JSON.stringify(sliceInfo) : null,
     fileId
   );
   return thumbPath !== null;
@@ -196,11 +222,30 @@ export async function rescanFile(fileId: number): Promise<RescanStatus> {
   return 'ok';
 }
 
+// Only one scan runs at a time. Two concurrent runScan() calls would interleave their writes
+// and, worse, each has its own `seenFileIds` set — so one could flag a file `missing` that the
+// other is mid-way through processing. Callers that fire a scan while one is running get the
+// in-flight scan's result instead of starting a second. (`SCAN_ON_STARTUP` + an eager user
+// clicking Rescan is the common way to hit this.)
+let inFlightScan: Promise<ScanResult> | null = null;
+
+export function isScanning(): boolean {
+  return inFlightScan !== null;
+}
+
+export function runScan(options: { rootLabel?: string } = {}): Promise<ScanResult> {
+  if (inFlightScan) return inFlightScan;
+  inFlightScan = doScan(options).finally(() => {
+    inFlightScan = null;
+  });
+  return inFlightScan;
+}
+
 // `rootLabel` scopes the scan to a single watched folder (matched by its config label) —
 // the per-source "rescan this folder" action. The walk, the new/changed detection, and the
 // missing-flag pass at the end are all scoped to `scanRoots`, so a per-folder scan never
 // touches rows belonging to other roots. Omit it for the catalog-wide pass.
-export async function runScan(options: { rootLabel?: string } = {}): Promise<ScanResult> {
+async function doScan(options: { rootLabel?: string } = {}): Promise<ScanResult> {
   const config = loadConfig();
   const scanRoots =
     options.rootLabel != null
@@ -208,10 +253,26 @@ export async function runScan(options: { rootLabel?: string } = {}): Promise<Sca
       : config.roots;
   const result: ScanResult = { added: 0, updated: 0, missing: 0 };
   const seenFileIds = new Set<number>();
+  // Roots whose path is currently unreachable (unplugged drive, offline NAS, Docker mount not
+  // yet up). Their catalogued rows are left exactly as they are — flagging a whole library
+  // `missing` because a drive is temporarily absent, then un-flagging on the next scan, is
+  // worse than a brief staleness. A root that walked to zero files but has >0 catalogued rows
+  // is treated the same way (almost always an unmounted share, not a real bulk deletion).
+  const unavailableRootIds = new Set<number>();
 
   for (const root of scanRoots) {
     const rootId = upsertRoot(root.path, root.label);
-    const files = fs.existsSync(root.path) ? walk(root.path) : [];
+    const exists = fs.existsSync(root.path);
+    const files = exists ? walk(root.path) : [];
+
+    if (!exists) {
+      unavailableRootIds.add(rootId);
+    } else if (files.length === 0) {
+      const rowCount = (
+        db.prepare('SELECT COUNT(*) as c FROM files WHERE root_id = ?').get(rootId) as { c: number }
+      ).c;
+      if (rowCount > 0) unavailableRootIds.add(rootId);
+    }
 
     for (const fullPath of files) {
       try {
@@ -268,8 +329,11 @@ export async function runScan(options: { rootLabel?: string } = {}): Promise<Sca
     }
   }
 
-  // Mark files not seen in this scan as missing (only within scanned roots)
-  const rootIds = scanRoots.map((r) => upsertRoot(r.path, r.label));
+  // Mark files not seen in this scan as missing — but only within roots that were actually
+  // reachable this pass (see `unavailableRootIds`).
+  const rootIds = scanRoots
+    .map((r) => upsertRoot(r.path, r.label))
+    .filter((id) => !unavailableRootIds.has(id));
   if (rootIds.length > 0) {
     const placeholders = rootIds.map(() => '?').join(',');
     const allFiles = db

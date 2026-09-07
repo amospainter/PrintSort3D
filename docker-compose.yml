@@ -7,7 +7,14 @@ services:
     # build: .
     container_name: printsort3d
     ports:
-      - "3001:3001"
+      # Loopback-only by default — reachable at http://localhost:3001 on the Docker host, not
+      # from the LAN. To expose it on your network, change this to "3001:3001" AND set
+      # PRINTSORT_PASSWORD below (or put an authenticating reverse proxy in front).
+      - "127.0.0.1:3001:3001"
+    # environment:
+    #   PRINTSORT_PASSWORD: "choose-a-strong-password"   # HTTP Basic auth on every request
+    #   PRINTSORT_READONLY: "1"                          # reject all catalogue edits
+    #   PRINTSORT_CORS_ORIGINS: "https://models.example" # allow a browser app on another origin
     volumes:
       # Persistent app state: SQLite catalog, config.json, thumbnail + asset caches.
       - ${DATA_DIR:-./data}:/data

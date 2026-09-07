@@ -23,12 +23,26 @@ const SORT_OPTIONS = [
   { value: 'added', label: 'Date added' },
   { value: 'mtime', label: 'Date modified' },
   { value: 'size', label: 'Size' },
+  { value: 'printTime', label: 'Print time' },
+  { value: 'filament', label: 'Filament used' },
 ] as const;
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return m > 0 ? `${m}m` : `${Math.round(seconds)}s`;
+}
+
+function formatGrams(g: number): string {
+  return g >= 1000 ? `${(g / 1000).toFixed(1)} kg` : `${g.toFixed(g < 10 ? 1 : 0)} g`;
 }
 
 // relativePath includes the filename and may use OS-specific separators (scanned with path.relative);
@@ -65,7 +79,11 @@ export default function Library() {
   const rootFilter = searchParams.get('root') ?? '';
   const folderFilter = searchParams.get('folder') ?? '';
   const duplicatesOnly = searchParams.get('dup') === '1';
+  const missingOnly = searchParams.get('missing') === '1';
   const sort = searchParams.get('sort') ?? 'added';
+  const dir = (searchParams.get('dir') as 'asc' | 'desc' | null) ?? null;
+  // Matches the server's per-column default (routes.ts sortMap): name ascends, the rest descend.
+  const effectiveDir: 'asc' | 'desc' = dir ?? (sort === 'name' ? 'asc' : 'desc');
   const view = (searchParams.get('view') as ViewMode) || 'grid';
   const page = Math.max(1, Number(searchParams.get('page')) || 1);
   const pageSize = Number(searchParams.get('pageSize')) || DEFAULT_PAGE_SIZE;
@@ -73,11 +91,18 @@ export default function Library() {
   // Sidebar-driven view title — mirrors which of the sidebar's "All models" / "Duplicates" /
   // source links produced the current URL, so the page heading stays in sync with it.
   const folderSegments = folderFilter ? folderFilter.split('/') : [];
-  const pageTitle = duplicatesOnly
-    ? 'Duplicates'
-    : folderSegments.length > 0
-      ? folderSegments[folderSegments.length - 1]
-      : rootFilter || 'All models';
+  const pageTitle = missingOnly
+    ? 'Missing files'
+    : duplicatesOnly
+      ? 'Duplicates'
+      : folderSegments.length > 0
+        ? folderSegments[folderSegments.length - 1]
+        : rootFilter || 'All models';
+
+  // The search box is debounced: typing updates this local state immediately (responsive
+  // input) but the URL — and therefore the network request — only follows 250ms later.
+  const [queryInput, setQueryInput] = useState(query);
+  useEffect(() => setQueryInput(query), [query]);
 
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [total, setTotal] = useState(0);
@@ -93,6 +118,7 @@ export default function Library() {
   const [band, setBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const gridRef = useRef<HTMLDivElement>(null);
+  const loadSeqRef = useRef(0);
   const lastIndexRef = useRef<number | null>(null);
   const dragBaseRef = useRef<Set<number>>(new Set());
   const suppressClickRef = useRef(false);
@@ -149,8 +175,9 @@ export default function Library() {
   };
 
   // Reload the current result set without touching selection (used after a bulk tag edit,
-  // where the selected cards should stay selected but show their new tags).
-  const loadInto = () =>
+  // where the selected cards should stay selected but show their new tags). `seq`, when
+  // passed, is checked against loadSeqRef before applying — a stale response is discarded.
+  const loadInto = (seq?: number) =>
     api
       .listFiles({
         query: query || undefined,
@@ -159,11 +186,14 @@ export default function Library() {
         tags: tagsFilter.length > 0 ? tagsFilter : undefined,
         ext: extFilter || undefined,
         duplicatesOnly: duplicatesOnly || undefined,
+        missingOnly: missingOnly || undefined,
         sort,
+        dir: dir ?? undefined,
         page,
         pageSize,
       })
       .then((res) => {
+        if (seq !== undefined && seq !== loadSeqRef.current) return;
         setFiles(res.items);
         setTotal(res.total);
         setTotalPages(res.totalPages);
@@ -174,8 +204,23 @@ export default function Library() {
     loadInto().finally(() => setLoading(false));
   };
 
+  // Debounce the search box → URL. Skip when the input already matches the URL (e.g. the
+  // effect that mirrors an external `query` change back into `queryInput`).
   useEffect(() => {
-    load();
+    if (queryInput === query) return;
+    const t = setTimeout(() => updateParams({ q: queryInput || null }), 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryInput]);
+
+  useEffect(() => {
+    const seq = ++loadSeqRef.current;
+    setLoading(true);
+    loadInto(seq)
+      .catch(() => {})
+      .finally(() => {
+        if (seq === loadSeqRef.current) setLoading(false);
+      });
     api.listTags().then(setAllTags);
     clearSelection();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -296,8 +341,8 @@ export default function Library() {
           <input
             className="search-input"
             placeholder="Search models..."
-            value={query}
-            onChange={(e) => updateParams({ q: e.target.value })}
+            value={queryInput}
+            onChange={(e) => setQueryInput(e.target.value)}
           />
         </div>
         <TagInput
@@ -322,13 +367,24 @@ export default function Library() {
           ))}
         </div>
 
-        <select aria-label="Sort by" value={sort} onChange={(e) => updateParams({ sort: e.target.value }, false)}>
-          {SORT_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+        <div className="sort-control">
+          <select aria-label="Sort by" value={sort} onChange={(e) => updateParams({ sort: e.target.value, dir: null }, false)}>
+            {SORT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="sort-dir-toggle"
+            aria-label={effectiveDir === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending'}
+            title={effectiveDir === 'asc' ? 'Ascending' : 'Descending'}
+            onClick={() => updateParams({ dir: effectiveDir === 'asc' ? 'desc' : 'asc' }, false)}
+          >
+            {effectiveDir === 'asc' ? '↑' : '↓'}
+          </button>
+        </div>
 
         <div className="view-toggle">
           <button
@@ -418,7 +474,19 @@ export default function Library() {
               <div className="card-body">
                 <div className="card-name">{f.filename}</div>
                 <div className="card-location">{fileLocation(f)}</div>
-                <div className="card-size">{formatSize(f.sizeBytes)}</div>
+                <div className="card-size">
+                  {formatSize(f.sizeBytes)}
+                  {f.sliceInfo?.printTimeSeconds != null && (
+                    <span className="card-slice" title="Estimated print time">
+                      · ⏱ {formatDuration(f.sliceInfo.printTimeSeconds)}
+                    </span>
+                  )}
+                  {f.sliceInfo?.filamentWeightGrams != null && (
+                    <span className="card-slice" title="Filament used">
+                      · {formatGrams(f.sliceInfo.filamentWeightGrams)}
+                    </span>
+                  )}
+                </div>
                 <div className="card-tags">
                   {f.tags.map((t) => (
                     <TagChip key={t} name={t} color={tagColors.get(t)} onClick={() => addTagFilter(t)} />

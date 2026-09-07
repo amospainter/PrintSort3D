@@ -235,70 +235,84 @@ function parseBuildItemOrder(modelXml: string): string[] {
  * for non-Bambu 3MFs (no Metadata/model_settings.config) or on any parse failure — the
  * client falls back to showing the whole model when a plate has no mapped indices.
  */
-export function computePlateBuildIndices(filePath: string): Map<number, number[]> {
+export interface PlateInfoMaps {
+  buildIndices: Map<number, number[]>;
+  names: Map<number, string>;
+}
+
+/**
+ * Both plate-derived maps in one pass — `computePlateBuildIndices` and `computePlateNames`
+ * used to each open the zip and parse the same `Metadata/model_settings.config`. The scanner
+ * calls this once; the two functions below stay as-is for callers (and tests) that only want
+ * one of the maps.
+ */
+export function computePlateInfo(filePath: string): PlateInfoMaps {
+  const empty: PlateInfoMaps = { buildIndices: new Map(), names: new Map() };
   let zip: AdmZip;
   try {
     zip = new AdmZip(filePath);
   } catch {
-    return new Map();
+    return empty;
   }
 
   const settingsEntry = zip.getEntry('Metadata/model_settings.config');
-  const modelEntry = zip.getEntry('3D/3dmodel.model');
-  if (!settingsEntry || !modelEntry) return new Map();
+  if (!settingsEntry) return empty;
 
   let settingsXml: string;
-  let modelXml: string;
   try {
     settingsXml = settingsEntry.getData().toString('utf-8');
-    modelXml = modelEntry.getData().toString('utf-8');
   } catch {
-    return new Map();
+    return empty;
   }
 
   const plates = parsePlateObjectIds(settingsXml);
-  if (plates.length === 0) return new Map();
-  const buildOrder = parseBuildItemOrder(modelXml);
+  if (plates.length === 0) return empty;
 
-  const result = new Map<number, number[]>();
+  const names = new Map<number, string>();
   for (const plate of plates) {
-    const indices = plate.objectIds.map((id) => buildOrder.indexOf(id)).filter((i) => i !== -1);
-    if (indices.length > 0) result.set(plate.platerId, indices);
+    if (plate.name) names.set(plate.platerId, plate.name);
   }
-  return result;
+
+  const buildIndices = new Map<number, number[]>();
+  const modelEntry = zip.getEntry('3D/3dmodel.model');
+  if (modelEntry) {
+    try {
+      const buildOrder = parseBuildItemOrder(modelEntry.getData().toString('utf-8'));
+      for (const plate of plates) {
+        const indices = plate.objectIds.map((id) => buildOrder.indexOf(id)).filter((i) => i !== -1);
+        if (indices.length > 0) buildIndices.set(plate.platerId, indices);
+      }
+    } catch {
+      /* malformed 3dmodel.model — names still usable */
+    }
+  }
+
+  return { buildIndices, names };
+}
+
+/**
+ * Maps each Bambu/Orca plate (by its plater_id, the same number used in
+ * Metadata/plate_N.* filenames that groupImagesByPlate parses) to the indices of the
+ * <item> elements in the root 3D/3dmodel.model's <build> section that belong to it.
+ * Three.js's ThreeMFLoader.parse() builds exactly one Group child per build item, in the
+ * same document order (see 3MFLoader.js's `build()`), so these indices double as indices
+ * into that Group's `.children` client-side — letting the 3D viewer show/hide individual
+ * plates instead of always rendering every plate merged together. Returns an empty map
+ * for non-Bambu 3MFs (no Metadata/model_settings.config) or on any parse failure — the
+ * client falls back to showing the whole model when a plate has no mapped indices.
+ */
+export function computePlateBuildIndices(filePath: string): Map<number, number[]> {
+  return computePlateInfo(filePath).buildIndices;
 }
 
 /**
  * Maps each Bambu/Orca plate's plater_id to its human-assigned name (Bambu Studio/
  * OrcaSlicer's "rename this plate" — e.g. "Body", "Eyes"). Plates nobody renamed have no
  * entry (parsePlateObjectIds already normalizes an empty plater_name to null), so callers
- * fall back to "Plate N" for those. Kept separate from computePlateBuildIndices — same
- * underlying model_settings.config parse, different return shape — rather than folding
- * name into that function's Map<number, number[]> and breaking its existing callers.
+ * fall back to "Plate N" for those.
  */
 export function computePlateNames(filePath: string): Map<number, string> {
-  let zip: AdmZip;
-  try {
-    zip = new AdmZip(filePath);
-  } catch {
-    return new Map();
-  }
-
-  const settingsEntry = zip.getEntry('Metadata/model_settings.config');
-  if (!settingsEntry) return new Map();
-
-  let settingsXml: string;
-  try {
-    settingsXml = settingsEntry.getData().toString('utf-8');
-  } catch {
-    return new Map();
-  }
-
-  const result = new Map<number, string>();
-  for (const plate of parsePlateObjectIds(settingsXml)) {
-    if (plate.name) result.set(plate.platerId, plate.name);
-  }
-  return result;
+  return computePlateInfo(filePath).names;
 }
 
 export function extractThreeMfData(filePath: string): ThreeMfExtract {

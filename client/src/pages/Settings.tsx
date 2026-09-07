@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, type RootConfig, type ScanResult, type TagInfo, type PlateSize } from '../api';
 import { TAG_COLOR_PRESETS, resolveTagColor, tagChipStyle } from '../tagColors';
 
@@ -14,13 +15,18 @@ export default function Settings() {
   const [plateSaved, setPlateSaved] = useState<string | null>(null);
 
   const [tags, setTags] = useState<TagInfo[]>([]);
+  const [missingCount, setMissingCount] = useState(0);
+  const [purging, setPurging] = useState(false);
 
   const reload = () => api.getRoots().then(setRoots);
   const reloadTags = () => api.listTags().then(setTags);
+  const reloadMissing = () =>
+    api.listFiles({ missingOnly: true, pageSize: 1 }).then((r) => setMissingCount(r.total));
 
   useEffect(() => {
     reload();
     reloadTags();
+    reloadMissing();
     api.getSettings().then((s) => {
       setPlateSize(s.defaultPlateSize);
     });
@@ -45,11 +51,24 @@ export default function Settings() {
     setScanResult(null);
     api
       .scan(root)
-      .then(setScanResult)
+      .then((r) => {
+        setScanResult(r);
+        reloadMissing();
+      })
       .finally(() => {
         setScanning(false);
         setScanningRoot(null);
       });
+  };
+
+  const purgeMissing = () => {
+    if (!window.confirm(`Remove ${missingCount} missing file${missingCount === 1 ? '' : 's'} from the catalogue? Tags and notes on them are lost. Files on disk are not touched.`))
+      return;
+    setPurging(true);
+    api
+      .purgeMissing()
+      .then(reloadMissing)
+      .finally(() => setPurging(false));
   };
 
   const scanBusy = scanning || scanningRoot !== null;
@@ -220,6 +239,27 @@ export default function Settings() {
         {scanResult && (
           <p>
             Added: {scanResult.added}, Updated: {scanResult.updated}, Missing: {scanResult.missing}
+          </p>
+        )}
+      </section>
+
+      <section>
+        <h3>Missing files</h3>
+        <p className="muted">
+          Files flagged missing on the last scan (not found on disk). Their tags and notes are
+          kept in case a drive was just unplugged. Removing them clears those rows and their
+          cached thumbnails — the files on disk are never touched.
+        </p>
+        {missingCount === 0 ? (
+          <p className="muted">No missing files.</p>
+        ) : (
+          <p>
+            <Link to="/?missing=1">
+              {missingCount} missing file{missingCount === 1 ? '' : 's'}
+            </Link>{' '}
+            <button disabled={purging} onClick={purgeMissing}>
+              {purging ? 'Removing…' : 'Remove all from catalogue'}
+            </button>
           </p>
         )}
       </section>

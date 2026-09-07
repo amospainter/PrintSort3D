@@ -7,6 +7,13 @@ const DB_PATH = process.env.DB_PATH ?? path.join(__dirname, '..', 'catalog.db');
 
 export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
+// With WAL, synchronous=NORMAL keeps the database crash-safe (only the last transaction or
+// two can be lost on an OS-level crash, never corruption) while dropping an fsync per commit.
+// A full scan issues thousands of small writes, so this is a real throughput win.
+db.exec('PRAGMA synchronous = NORMAL');
+// FK enforcement is off by default in SQLite; node:sqlite happens to enable it, but make the
+// `file_tags` ON DELETE CASCADE an explicit dependency rather than a library default.
+db.exec('PRAGMA foreign_keys = ON');
 // Without this, any lock contention (a request write landing while runScan() is mid-write,
 // or a WAL checkpoint) fails immediately with SQLITE_BUSY instead of waiting. That surfaced
 // as intermittent "tags didn't save" under Docker, where SCAN_ON_STARTUP keeps a scan
@@ -48,6 +55,7 @@ CREATE TABLE IF NOT EXISTS files (
   plates_json TEXT,
   plate_size_json TEXT,
   mesh_path TEXT,
+  slice_info_json TEXT,
   UNIQUE(root_id, relative_path)
 );
 
@@ -83,6 +91,7 @@ const migrations: [string, string][] = [
   ['plate_size_json', 'ALTER TABLE files ADD COLUMN plate_size_json TEXT'],
   ['filaments_json', 'ALTER TABLE files ADD COLUMN filaments_json TEXT'],
   ['mesh_path', 'ALTER TABLE files ADD COLUMN mesh_path TEXT'],
+  ['slice_info_json', 'ALTER TABLE files ADD COLUMN slice_info_json TEXT'],
 ];
 
 for (const [column, sql] of migrations) {
@@ -123,7 +132,15 @@ try {
 
 // Safe to run unconditionally: these reference columns guaranteed to exist by this point
 // (either from CREATE TABLE on a fresh DB, or the migrations loop above on an existing one).
+// The sort/filter indexes matter once a catalog reaches tens of thousands of files — every
+// `GET /api/files` does `ORDER BY <col>` and often filters on `ext` / `root_id`.
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash);
 CREATE INDEX IF NOT EXISTS idx_files_geometry_hash ON files(geometry_hash);
+CREATE INDEX IF NOT EXISTS idx_files_added_at ON files(added_at);
+CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+CREATE INDEX IF NOT EXISTS idx_files_size_bytes ON files(size_bytes);
+CREATE INDEX IF NOT EXISTS idx_files_filename ON files(filename);
+CREATE INDEX IF NOT EXISTS idx_files_root_id ON files(root_id);
+CREATE INDEX IF NOT EXISTS idx_files_ext ON files(ext);
 `);

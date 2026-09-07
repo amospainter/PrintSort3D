@@ -135,6 +135,21 @@ endsolid test
 
     expect(computeDimensions(file, '.stl')).toBeNull();
   });
+
+  it('returns null (not garbage) for a truncated binary STL whose size does not match its header', () => {
+    // A valid binary STL, then chopped mid-triangle. Size arithmetic no longer checks out and
+    // it doesn't start with "solid" — the parser must NOT reinterpret the binary as ASCII text.
+    const buf = buildBinaryStl([
+      [
+        [0, 0, 0],
+        [10, 0, 0],
+        [0, 10, 0],
+      ],
+    ]).subarray(0, 100);
+    const file = writeTmp('truncated.stl', Buffer.from(buf));
+
+    expect(computeDimensions(file, '.stl')).toBeNull();
+  });
 });
 
 describe('computeDimensions - OBJ', () => {
