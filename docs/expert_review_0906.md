@@ -39,7 +39,7 @@ zip open. Only the §16 feature set beyond §16.1 remains.
 | 12 | "Name" sort is descending (Z→A) with no ascending toggle | Low-Med | UX | **Fixed** — `dir` param + per-column default + toggle |
 | 13 | `preserveDrawingBuffer: true` with nothing reading pixels | Low | Perf | **Fixed** — removed |
 | 14 | `resolveFilePath` prefix check, `sanitizeName` collisions, ASCII-STL size ceiling, `/archive-raw` double open | Low | Robustness | **Fixed** — boundary check, WebP name dedup, `solid`-prefix guard + oversize warning, `readArchiveModelEntry` opens the zip once |
-| 15 | `synchronous=FULL`, no indexes beyond the two hash ones, `duplicate_count` per-row subquery | Low-Med | Perf | **Fixed** — `synchronous=NORMAL` + `foreign_keys=ON` + 7 indexes; `duplicate_count` is a materialized column refreshed at scan end / on delete |
+| 15 | `synchronous=FULL`, no indexes beyond the two hash ones, `duplicate_count` per-row subquery | Low-Med | Perf | **Fixed** — `synchronous=NORMAL` + `foreign_keys=ON` + 7 indexes; `duplicate_count` is a materialized column refreshed at scan end / on delete, scoped to touched hash-mates |
 | 16.1 | Print time / filament / cost from `slice_info.config` | — | Feature | **Built** — parsed, stored, Detail section + card badges + sort |
 
 ---
