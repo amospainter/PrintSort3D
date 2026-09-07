@@ -64,7 +64,9 @@ function walkObjVertices(buffer: Buffer, onVertex: VertexCallback): boolean {
 }
 
 const XML_VERTEX_TAG_RE = /<vertex\b([^>]*)\/>/gi;
-const XML_ATTR_RE = /([xyz])="(-?[\d.eE+]+)"/g;
+// "-" must be inside the class (not just an optional prefix) to keep negative exponents
+// like "1.5e-05" intact — otherwise Number() sees "1.5e" and returns NaN.
+const XML_ATTR_RE = /([xyz])="([-\d.eE+]+)"/g;
 
 function walkThreeMfVertices(filePath: string, onVertex: VertexCallback): boolean {
   let found = false;

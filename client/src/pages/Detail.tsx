@@ -37,6 +37,11 @@ function PathBreadcrumb({ file }: { file: FileEntry }) {
   );
 }
 
+// Below this source-file size, parsing the real model in-browser is cheap enough that the
+// viewer prefers it over the server-baked mesh (which stays the default for large files to
+// keep the main thread responsive). STL/OBJ/3MF alike.
+const FULL_MODEL_AUTO_BYTES = 5 * 1024 * 1024;
+
 function formatDimensions(size: { x: number; y: number; z: number }): string {
   const fmt = (n: number) => n.toFixed(1);
   return `${fmt(size.x)} × ${fmt(size.y)} × ${fmt(size.z)} mm`;
@@ -129,10 +134,14 @@ export default function Detail() {
   const [activePlateIndex, setActivePlateIndex] = useState<number | null>(null);
   const [rescanning, setRescanning] = useState(false);
   const [rescanMessage, setRescanMessage] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [openMessage, setOpenMessage] = useState<string | null>(null);
   const [painted, setPainted] = useState(false);
   // "Load full model": swap the fast server-baked mesh for the raw source file parsed
   // in-browser (three.js's own STL/OBJ/3MF loaders) — an escape hatch for when the bake
-  // looks wrong. Reset whenever the viewed file changes.
+  // looks wrong. Small source files (< FULL_MODEL_AUTO_BYTES) parse in-browser fast enough
+  // that we default to the raw model for them, using the bake only as the perf fallback for
+  // large files. Reset whenever the viewed file changes.
   const [loadFull, setLoadFull] = useState(false);
 
   useEffect(() => {
@@ -142,7 +151,7 @@ export default function Detail() {
       setTagDraft(f.tags);
       setPendingTag('');
       setActivePlateIndex(null); // "All plates" by default — matches the pre-plate-switcher 3D view
-      setLoadFull(false);
+      setLoadFull(f.ext !== '.zip' && f.sizeBytes > 0 && f.sizeBytes < FULL_MODEL_AUTO_BYTES);
       setArrayBuffer(null);
     });
     api.listTags().then(setAllTags);
@@ -169,12 +178,12 @@ export default function Detail() {
   // source for the "Load full model" toggle when a baked mesh does exist.
   useEffect(() => {
     if (!file || file.ext === '.zip') return;
-    if (file.meshUrl && !loadFull) return;
+    if (file.meshUrl && !(loadFull && !painted)) return; // baked mesh covers this case
     if (arrayBuffer) return;
     fetch(api.rawFileUrl(fileId))
       .then((res) => (res.ok ? res.arrayBuffer() : null))
       .then(setArrayBuffer);
-  }, [fileId, file, loadFull, arrayBuffer]);
+  }, [fileId, file, loadFull, painted, arrayBuffer]);
 
   const activePlate = useMemo(
     () => (activePlateIndex === null ? null : file?.plates.find((p) => p.index === activePlateIndex) ?? null),
@@ -208,6 +217,16 @@ export default function Detail() {
       .finally(() => setSaving(false));
   };
 
+  const openInSlicer = () => {
+    setOpening(true);
+    setOpenMessage(null);
+    api
+      .openInSlicer(fileId)
+      .then((r) => setOpenMessage(r.method === 'os-default' ? 'Opened with the default app' : 'Opened in slicer'))
+      .catch(() => setOpenMessage('Could not open — set the slicer path in Settings'))
+      .finally(() => setOpening(false));
+  };
+
   if (!file) return <p>Loading...</p>;
 
   return (
@@ -221,8 +240,14 @@ export default function Detail() {
         <button type="button" className="rescan-button" disabled={rescanning} onClick={rescan}>
           <RefreshIcon className={rescanning ? 'spin' : ''} /> {rescanning ? 'Rescanning…' : 'Rescan'}
         </button>
+        {file.ext !== '.zip' && !file.missing && (
+          <button type="button" className="rescan-button" disabled={opening} onClick={openInSlicer}>
+            {opening ? 'Opening…' : 'Open in slicer'}
+          </button>
+        )}
       </div>
       {rescanMessage && <p className="muted rescan-status">{rescanMessage}</p>}
+      {openMessage && <p className="muted rescan-status">{openMessage}</p>}
 
       <div className="detail-layout">
         <div className="viewer-column">
@@ -236,22 +261,25 @@ export default function Detail() {
                     ext={file.ext}
                     arrayBuffer={arrayBuffer}
                     meshUrl={file.meshUrl}
-                    preferRaw={loadFull}
+                    // Painted colours ride inside the baked mesh, so turning paint on forces
+                    // the baked mesh even when we'd otherwise show the raw full model.
+                    preferRaw={loadFull && !painted}
                     visibleChildIndices={visibleChildIndices}
                     plates={file.plates}
                     bedSize={file.bedSize}
                     filamentColors={file.filaments.map((f) => f.color)}
-                    painted={painted && !loadFull}
+                    painted={painted}
                   />
                   <div className="viewer-hint">
                     <span>Drag to rotate &middot; Right-drag to pan &middot; Scroll to zoom</span>
-                    {file.meshUrl && file.filaments.length > 1 && !loadFull && (
+                    {file.meshUrl && file.filaments.length > 1 && (
                       <label className="viewer-paint-toggle">
                         <input type="checkbox" checked={painted} onChange={(e) => setPainted(e.target.checked)} />
                         Show painted colors
                       </label>
                     )}
                     {file.meshUrl &&
+                      !painted &&
                       (loadFull ? (
                         <span className="viewer-fullmodel-status">
                           {arrayBuffer ? 'Full model (parsed in browser)' : 'Loading full model…'}

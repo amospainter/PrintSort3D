@@ -65,6 +65,7 @@ import {
   groupImagesByPlate,
   parsePlateSize,
   computePlateNames,
+  computePlateBuildIndices,
 } from './threeMf';
 
 const tmpFiles: string[] = [];
@@ -353,6 +354,63 @@ describe('computePlateNames', () => {
     tmpFiles.push(filePath);
 
     expect(computePlateNames(filePath)).toEqual(new Map());
+  });
+});
+
+// Bambu/Orca model_settings.config <plate> block with the object_ids placed on it, plus a
+// matching 3D/3dmodel.model whose <build> section lists <item objectid="..."> in `buildOrder`.
+function plateBlock(platerId: number, objectIds: number[]): string {
+  const insts = objectIds
+    .map((id) => `<model_instance>\n<metadata key="object_id" value="${id}"/>\n</model_instance>`)
+    .join('\n');
+  return `<plate>\n<metadata key="plater_id" value="${platerId}"/>\n${insts}\n</plate>`;
+}
+function buildModelXml(buildOrder: number[]): string {
+  const items = buildOrder.map((id) => `<item objectid="${id}"/>`).join('');
+  return `<?xml version="1.0"?><model><build>${items}</build></model>`;
+}
+
+describe('computePlateBuildIndices', () => {
+  it('maps each plater_id to the build-item indices (Group.children order) of its objects', () => {
+    const file = writeFixtureZip([
+      {
+        name: 'Metadata/model_settings.config',
+        content: `<config>\n${plateBlock(1, [10, 20])}\n${plateBlock(2, [30])}\n</config>`,
+      },
+      // Build order deliberately not sorted / not matching object_id order.
+      { name: '3D/3dmodel.model', content: buildModelXml([30, 10, 20]) },
+    ]);
+
+    expect(computePlateBuildIndices(file)).toEqual(
+      new Map([
+        [1, [1, 2]], // objects 10, 20 are at build indices 1 and 2
+        [2, [0]], // object 30 is at build index 0
+      ])
+    );
+  });
+
+  it('drops object_ids that are not present in the build section, and omits a plate left with none', () => {
+    const file = writeFixtureZip([
+      {
+        name: 'Metadata/model_settings.config',
+        content: `<config>\n${plateBlock(1, [10, 999])}\n${plateBlock(2, [888])}\n</config>`,
+      },
+      { name: '3D/3dmodel.model', content: buildModelXml([10, 20]) },
+    ]);
+
+    expect(computePlateBuildIndices(file)).toEqual(new Map([[1, [0]]]));
+  });
+
+  it('returns an empty map for a non-Bambu 3MF (no model_settings.config)', () => {
+    const file = writeFixtureZip([{ name: '3D/3dmodel.model', content: buildModelXml([1]) }]);
+    expect(computePlateBuildIndices(file)).toEqual(new Map());
+  });
+
+  it('does not throw on a corrupt / non-zip file', () => {
+    const filePath = path.join(os.tmpdir(), `corrupt-plate-idx-${Date.now()}.3mf`);
+    fs.writeFileSync(filePath, 'not a zip');
+    tmpFiles.push(filePath);
+    expect(computePlateBuildIndices(filePath)).toEqual(new Map());
   });
 });
 

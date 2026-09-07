@@ -52,9 +52,13 @@ const OBJECT_BLOCK_RE = /<object\b[^>]*\bid="(\d+)"[^>]*>([\s\S]*?)<\/object>/g;
 const MESH_RE = /<mesh>([\s\S]*?)<\/mesh>/;
 const COMPONENT_RE = /<component\b[^>]*\/>/g;
 const VERTEX_RE = /<vertex\b([^>]*)\/>/g;
-const VX_RE = /\bx="(-?[\d.eE+]+)"/;
-const VY_RE = /\by="(-?[\d.eE+]+)"/;
-const VZ_RE = /\bz="(-?[\d.eE+]+)"/;
+// Coordinates can be in scientific notation with a *negative* exponent (e.g. "1.5e-05"),
+// so the numeric class must include a bare "-" (not just an optional leading one) — an
+// earlier `-?[\d.eE+]+` truncated "1.5e-05" to "1.5e", yielding NaN vertices that rendered
+// as spikes to the plate origin.
+const VX_RE = /\bx="([-\d.eE+]+)"/;
+const VY_RE = /\by="([-\d.eE+]+)"/;
+const VZ_RE = /\bz="([-\d.eE+]+)"/;
 const TRIANGLE_RE = /<triangle\b([^>]*)\/>/g;
 const T1_RE = /\bv1="(\d+)"/;
 const T2_RE = /\bv2="(\d+)"/;
@@ -132,6 +136,12 @@ function appendMesh(acc: Accumulator, meshXml: string, matrix: Affine): void {
     const x = Number(xm[1]);
     const y = Number(ym[1]);
     const z = Number(zm[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      // Unparseable coord — keep vertex indexing aligned with a placeholder rather than
+      // shifting every subsequent triangle's indices.
+      acc.pos.push(0, 0, 0);
+      continue;
+    }
     acc.pos.push(
       matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[3],
       matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[7],

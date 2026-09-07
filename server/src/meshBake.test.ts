@@ -114,6 +114,93 @@ describe('bakeModel — 3MF', () => {
     expect(Array.from(bakeModel(file, '.3mf')![0].indices)).toEqual([0, 2, 1]);
   });
 
+  it('parses coordinates in scientific notation with a negative exponent', () => {
+    // Real Bambu/Orca exports emit near-zero coords as e.g. "1.5e-05". A regex that only
+    // allowed a leading "-" truncated these to NaN, producing a stray vertex at the origin
+    // that rendered as a spike to the plate corner.
+    const file = write3mf([
+      {
+        name: '3D/3dmodel.model',
+        content:
+          '<model><resources>' +
+          '<object id="1" type="model"><mesh><vertices>' +
+          '<vertex x="1.5e-05" y="-2.5e-4" z="10"/>' +
+          '<vertex x="1" y="0" z="0"/>' +
+          '<vertex x="0" y="1" z="0"/>' +
+          '</vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>' +
+          '</resources><build><item objectid="1"/></build></model>',
+      },
+    ]);
+    const [p] = bakeModel(file, '.3mf')!;
+    expect(Array.from(p.positions).every(Number.isFinite)).toBe(true);
+    expect(p.positions[0]).toBeCloseTo(1.5e-5, 9);
+    expect(p.positions[1]).toBeCloseTo(-2.5e-4, 9);
+    expect(p.positions[2]).toBeCloseTo(10, 5);
+  });
+
+  it('resolves a multi-level <component p:path> graph across part files, composing transforms', () => {
+    // build item → object 3 (in root) → component to object 2 (part file, +translate) →
+    // component to object 1 (same part file, mesh). Both transforms plus the item transform
+    // compose onto the vertices.
+    const file = write3mf([
+      {
+        name: '3D/3dmodel.model',
+        content:
+          '<model><resources>' +
+          '<object id="3" type="model"><components>' +
+          '<component objectid="2" p:path="/3D/Objects/parts.model"/>' +
+          '</components></object>' +
+          '</resources><build><item objectid="3" transform="1 0 0 0 1 0 0 0 1 100 0 0"/></build></model>',
+      },
+      {
+        name: '3D/Objects/parts.model',
+        content:
+          '<model><resources>' +
+          '<object id="2" type="model"><components>' +
+          '<component objectid="1" transform="1 0 0 0 1 0 0 0 1 0 10 0"/>' +
+          '</components></object>' +
+          meshXml(1, [[0, 0, 0], [1, 0, 0], [0, 1, 0]], [{ v: [0, 1, 2] }]) +
+          '</resources></model>',
+      },
+    ]);
+
+    const parts = bakeModel(file, '.3mf')!;
+    expect(parts).toHaveLength(1);
+    // (0,0,0) shifted by item (+100 x) and component (+10 y) → (100,10,0); etc.
+    expect(Array.from(parts[0].positions)).toEqual([100, 10, 0, 101, 10, 0, 100, 11, 0]);
+  });
+
+  it('skips a malformed part file and still bakes geometry from the rest of the archive', () => {
+    const good = write3mf([
+      {
+        name: '3D/3dmodel.model',
+        content:
+          `<model><resources>${meshXml(1, CUBE_VERTS, [{ v: [0, 1, 2] }])}</resources>` +
+          '<build><item objectid="1"/></build></model>',
+      },
+    ]);
+    // Append a junk ".model" entry to the existing zip.
+    const zip = new AdmZip(good);
+    zip.addFile('3D/Objects/broken.model', Buffer.from('<model><not-valid'));
+    zip.writeZip(good);
+
+    const parts = bakeModel(good, '.3mf');
+    expect(parts).toHaveLength(1);
+    expect(parts![0].indices.length).toBe(3);
+  });
+
+  it('finds the manifest by its <build> section when it is not named 3D/3dmodel.model', () => {
+    const file = write3mf([
+      {
+        name: '3D/Objects/everything.model',
+        content:
+          `<model><resources>${meshXml(1, CUBE_VERTS, [{ v: [0, 1, 2] }])}</resources>` +
+          '<build><item objectid="1"/></build></model>',
+      },
+    ]);
+    expect(bakeModel(file, '.3mf')![0].indices.length).toBe(3);
+  });
+
   it('returns null for a corrupt / non-zip file', () => {
     const p = tmp('bad.3mf');
     fs.writeFileSync(p, 'not a zip');

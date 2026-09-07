@@ -77,3 +77,21 @@ describe('env-derived roots', () => {
     expect(onDisk.roots).toEqual([{ label: 'Hand Added', path: path.join(tmp, 'hand') }]);
   });
 });
+
+describe('slicerCommand', () => {
+  it('defaults to empty and round-trips through saveConfig', () => {
+    expect(loadConfig().slicerCommand).toBe('');
+    saveConfig({ roots: [], slicerCommand: '  C:/tools/bambu-studio.exe  ' });
+    expect(loadConfig().slicerCommand).toBe('C:/tools/bambu-studio.exe'); // trimmed
+  });
+
+  it('lets PRINTSORT_SLICER_COMMAND override the persisted value', () => {
+    saveConfig({ roots: [], slicerCommand: '/persisted/slicer' });
+    process.env.PRINTSORT_SLICER_COMMAND = '/env/slicer';
+    try {
+      expect(loadConfig().slicerCommand).toBe('/env/slicer');
+    } finally {
+      delete process.env.PRINTSORT_SLICER_COMMAND;
+    }
+  });
+});

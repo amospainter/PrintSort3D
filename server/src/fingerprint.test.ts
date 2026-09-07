@@ -123,4 +123,48 @@ describe('computeGeometryHash', () => {
     const file = writeTmp('model.gltf', '{}');
     expect(computeGeometryHash(file, '.gltf')).toBeNull();
   });
+
+  it('hashes the same geometry identically across formats (STL vs OBJ)', () => {
+    // The headline promise: "the same model re-exported to a different file format hashes
+    // identically" even though triangle/vertex order differs between exporters.
+    const verts: [number, number, number][] = [
+      [0, 0, 0],
+      [10, 0, 0],
+      [0, 5, 0],
+    ];
+    const stl = writeTmp('same.stl', asciiStlWithVertices(verts));
+    const obj = writeTmp(
+      'same.obj',
+      // OBJ lists vertices in a different order and references them by index — the walker
+      // still emits the three triangle-corner positions, so the normalized hash matches.
+      'v 0 5 0\nv 0 0 0\nv 10 0 0\nvn 0 0 1\nf 2//1 3//1 1//1\n'
+    );
+    expect(computeGeometryHash(obj, '.obj')).toBe(computeGeometryHash(stl, '.stl'));
+  });
+
+  it('binary and ASCII STL of the same triangle hash identically', () => {
+    const ascii = writeTmp(
+      'tri.stl',
+      asciiStlWithVertices([
+        [1, 2, 3],
+        [4, 2, 3],
+        [1, 6, 3],
+      ])
+    );
+    const buf = Buffer.alloc(84 + 50);
+    buf.writeUInt32LE(1, 80);
+    let off = 84 + 12;
+    for (const [x, y, z] of [
+      [1, 2, 3],
+      [4, 2, 3],
+      [1, 6, 3],
+    ] as [number, number, number][]) {
+      buf.writeFloatLE(x, off);
+      buf.writeFloatLE(y, off + 4);
+      buf.writeFloatLE(z, off + 8);
+      off += 12;
+    }
+    const bin = writeTmp('tri-bin.stl', buf);
+    expect(computeGeometryHash(bin, '.stl')).toBe(computeGeometryHash(ascii, '.stl'));
+  });
 });

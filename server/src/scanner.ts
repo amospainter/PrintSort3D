@@ -18,7 +18,7 @@ const SUPPORTED_EXTS = new Set(['.stl', '.3mf', '.obj', '.zip']);
 // disk. Legitimately-empty results (a file with no parseable geometry) still stop being
 // reprocessed once caught up, unlike inferring "needs backfill" from a nullable column, which
 // would retry forever for such files.
-const CURRENT_SCANNER_VERSION = 8;
+const CURRENT_SCANNER_VERSION = 9;
 
 function walk(dir: string, fileList: string[] = []): string[] {
   let entries: fs.Dirent[];

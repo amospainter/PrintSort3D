@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, type FileEntry, type TagInfo } from '../api';
 import { ThumbnailGenerator } from '../ThumbnailGenerator';
@@ -89,6 +89,51 @@ export default function Library() {
   const tagColors = useMemo(() => tagColorMap(allTags), [allTags]);
   const [rescanningIds, setRescanningIds] = useState<Set<number>>(new Set());
 
+  // ---- Multi-select (click, shift-range, or rubber-band drag) → bulk tag ----
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [band, setBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const lastIndexRef = useRef<number | null>(null);
+  const dragBaseRef = useRef<Set<number>>(new Set());
+  const suppressClickRef = useRef(false);
+
+  const selectedFiles = useMemo(() => files.filter((f) => selectedIds.has(f.id)), [files, selectedIds]);
+  const selectionTagUnion = useMemo(
+    () => [...new Set(selectedFiles.flatMap((f) => f.tags))].sort(),
+    [selectedFiles]
+  );
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    lastIndexRef.current = null;
+  };
+
+  const toggleSelect = (id: number, index: number, range: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (range && lastIndexRef.current != null) {
+        const [lo, hi] = [lastIndexRef.current, index].sort((a, b) => a - b);
+        for (let i = lo; i <= hi; i++) next.add(files[i].id);
+      } else if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+    lastIndexRef.current = index;
+  };
+
+  const applyBulkTag = (change: { add?: string[]; remove?: string[] }) => {
+    if (selectedIds.size === 0) return;
+    setBulkBusy(true);
+    api
+      .bulkTag([...selectedIds], change)
+      .then(() => Promise.all([loadInto(), api.listTags().then(setAllTags)]))
+      .finally(() => setBulkBusy(false));
+  };
+
   // Merges a patch into the URL's search params. Resets to page 1 by default (any filter
   // change invalidates the current page's contents) — pass resetPage: false for changes
   // that don't affect the result set (view toggle) or that are themselves a page change.
@@ -104,8 +149,9 @@ export default function Library() {
     setSearchParams(next, { replace: true });
   };
 
-  const load = () => {
-    setLoading(true);
+  // Reload the current result set without touching selection (used after a bulk tag edit,
+  // where the selected cards should stay selected but show their new tags).
+  const loadInto = () =>
     api
       .listFiles({
         query: query || undefined,
@@ -122,13 +168,17 @@ export default function Library() {
         setFiles(res.items);
         setTotal(res.total);
         setTotalPages(res.totalPages);
-      })
-      .finally(() => setLoading(false));
+      });
+
+  const load = () => {
+    setLoading(true);
+    loadInto().finally(() => setLoading(false));
   };
 
   useEffect(() => {
     load();
     api.listTags().then(setAllTags);
+    clearSelection();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -159,6 +209,62 @@ export default function Library() {
           return next;
         });
       });
+  };
+
+  // Rubber-band drag select over the grid background. Holding Shift/Ctrl/Cmd on mousedown
+  // adds to the existing selection instead of replacing it.
+  const onGridMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0 || view !== 'grid') return;
+    if ((e.target as HTMLElement).closest('button, a[href], input, .tag-chip, .card-menu')) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    dragBaseRef.current = e.shiftKey || e.metaKey || e.ctrlKey ? new Set(selectedIds) : new Set();
+    let moved = false;
+
+    const onMove = (ev: MouseEvent) => {
+      if (!moved && Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < 6) return;
+      moved = true;
+      const rect = {
+        x0: Math.min(startX, ev.clientX),
+        y0: Math.min(startY, ev.clientY),
+        x1: Math.max(startX, ev.clientX),
+        y1: Math.max(startY, ev.clientY),
+      };
+      setBand(rect);
+      const next = new Set(dragBaseRef.current);
+      gridRef.current?.querySelectorAll<HTMLElement>('[data-file-id]').forEach((el) => {
+        const r = el.getBoundingClientRect();
+        const hit = !(r.right < rect.x0 || r.left > rect.x1 || r.bottom < rect.y0 || r.top > rect.y1);
+        if (hit) next.add(Number(el.dataset.fileId));
+      });
+      setSelectedIds(next);
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      setBand(null);
+      if (moved) {
+        suppressClickRef.current = true;
+        setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 0);
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const selecting = selectedIds.size > 0;
+
+  const onCardClick = (e: React.MouseEvent, f: FileEntry, index: number) => {
+    if (suppressClickRef.current) {
+      e.preventDefault();
+      return;
+    }
+    if (selecting || e.shiftKey || e.metaKey || e.ctrlKey) {
+      e.preventDefault();
+      toggleSelect(f.id, index, e.shiftKey);
+    }
   };
 
   return (
@@ -248,14 +354,55 @@ export default function Library() {
         </div>
       </div>
 
+      {selecting && (
+        <div className="bulk-bar">
+          <span className="bulk-bar-count">{selectedIds.size} selected</span>
+          <button type="button" onClick={() => setSelectedIds(new Set(files.map((f) => f.id)))}>
+            Select page
+          </button>
+          <button type="button" onClick={clearSelection}>
+            Clear
+          </button>
+          <TagInput
+            value={[]}
+            onChange={(tags) => tags.length > 0 && applyBulkTag({ add: tags })}
+            suggestions={tagNames}
+            colors={tagColors}
+            placeholder={bulkBusy ? 'Working…' : 'Add tag to selected…'}
+          />
+          {selectionTagUnion.length > 0 && (
+            <div className="card-tags">
+              {selectionTagUnion.map((t) => (
+                <TagChip
+                  key={t}
+                  name={t}
+                  color={tagColors.get(t)}
+                  onClick={() => applyBulkTag({ remove: [t] })}
+                />
+              ))}
+              <span className="filament-swatch-label">(click a tag to remove it from all selected)</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {loading && <p>Loading...</p>}
       {!loading && files.length === 0 && <p>No files found. Add root folders in Settings and rescan.</p>}
 
       {!loading && view === 'grid' && (
-        <div className="grid">
-          {files.map((f) => (
-            <Link to={`/files/${f.id}`} key={f.id} className={`card ${f.missing ? 'missing' : ''}`}>
+        <div className="grid grid-selectable" ref={gridRef} onMouseDown={onGridMouseDown}>
+          {files.map((f, index) => (
+            <Link
+              to={`/files/${f.id}`}
+              key={f.id}
+              data-file-id={f.id}
+              className={`card ${f.missing ? 'missing' : ''} ${selectedIds.has(f.id) ? 'selected' : ''}`}
+              onClick={(e) => onCardClick(e, f, index)}
+            >
               <div className="card-thumb">
+                {(selecting || selectedIds.has(f.id)) && (
+                  <span className="card-select-box">{selectedIds.has(f.id) ? '✓' : ''}</span>
+                )}
                 {f.thumbnailUrl ? (
                   <img src={f.thumbnailUrl} alt={f.filename} />
                 ) : (
@@ -298,6 +445,7 @@ export default function Library() {
         <table className="file-table">
           <thead>
             <tr>
+              <th></th>
               <th>Name</th>
               <th>Library</th>
               <th>Path</th>
@@ -307,8 +455,16 @@ export default function Library() {
             </tr>
           </thead>
           <tbody>
-            {files.map((f) => (
+            {files.map((f, index) => (
               <tr key={f.id} className={f.missing ? 'missing' : ''}>
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${f.filename}`}
+                    checked={selectedIds.has(f.id)}
+                    onChange={(e) => toggleSelect(f.id, index, (e.nativeEvent as MouseEvent).shiftKey)}
+                  />
+                </td>
                 <td>
                   <Link to={`/files/${f.id}`}>{f.filename}</Link>
                 </td>
@@ -325,6 +481,13 @@ export default function Library() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {band && (
+        <div
+          className="rubber-band"
+          style={{ left: band.x0, top: band.y0, width: band.x1 - band.x0, height: band.y1 - band.y0 }}
+        />
       )}
 
       {!loading && total > 0 && (

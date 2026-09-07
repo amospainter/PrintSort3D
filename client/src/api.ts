@@ -31,6 +31,7 @@ export interface TagInfo {
 
 export interface AppSettings {
   defaultPlateSize: PlateSize;
+  slicerCommand: string; // path to the slicer exe for "Open in slicer"; "" = auto-detect Bambu Studio
 }
 
 export interface ArchiveEntry {
@@ -143,6 +144,12 @@ export const api = {
       body: JSON.stringify(patch),
     });
   },
+  bulkTag(fileIds: number[], change: { add?: string[]; remove?: string[] }) {
+    return request<{ updated: number }>('/api/files/bulk-tags', {
+      method: 'POST',
+      body: JSON.stringify({ fileIds, ...change }),
+    });
+  },
   listTags() {
     return request<TagInfo[]>('/api/tags');
   },
@@ -158,8 +165,11 @@ export const api = {
   getSettings() {
     return request<AppSettings>('/api/settings');
   },
-  updateSettings(patch: AppSettings) {
+  updateSettings(patch: Partial<AppSettings> & { defaultPlateSize: PlateSize }) {
     return request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
+  },
+  openInSlicer(id: number) {
+    return request<{ ok: true; method: string; command: string }>(`/api/files/${id}/open`, { method: 'POST' });
   },
   scan(root?: string) {
     return request<ScanResult>('/api/scan', {

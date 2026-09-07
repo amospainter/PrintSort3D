@@ -7,6 +7,7 @@ import { runScan, rescanFile } from './scanner';
 import { ASSETS_DIR } from './paths';
 import { deleteCachedImages, saveThumbnail, thumbnailFilePath, BAKED_MESH_FILENAME } from './assets';
 import { listArchiveModelEntries, readArchiveEntry } from './archive';
+import { openInSlicer } from './openInApp';
 
 export const router = Router();
 
@@ -296,6 +297,55 @@ router.patch('/files/:id', (req, res) => {
   res.json(serialize(row));
 });
 
+// Bulk tag edit: add and/or remove a set of tags across many files in one transaction.
+// Used by the Library's multi-select bulk-tag toolbar. `add` tags are created on demand
+// (same normalization as PATCH /files/:id); `remove` tags that don't exist are ignored.
+router.post('/files/bulk-tags', (req, res) => {
+  const { fileIds, add, remove } = req.body as { fileIds?: unknown; add?: unknown; remove?: unknown };
+  const ids = Array.isArray(fileIds) ? [...new Set(fileIds.map(Number).filter((n) => Number.isInteger(n) && n > 0))] : [];
+  const addNames = Array.isArray(add) ? add.map((s) => String(s).trim().toLowerCase()).filter(Boolean) : [];
+  const removeNames = Array.isArray(remove) ? remove.map((s) => String(s).trim().toLowerCase()).filter(Boolean) : [];
+  if (ids.length === 0) return res.status(400).json({ error: 'fileIds required' });
+  if (addNames.length === 0 && removeNames.length === 0) return res.status(400).json({ error: 'add or remove required' });
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+
+    const existingIds = ids.filter((id) => db.prepare('SELECT 1 FROM files WHERE id = ?').get(id));
+
+    for (const name of addNames) {
+      let tagRow = db.prepare('SELECT id FROM tags WHERE name = ?').get(name) as { id: number } | undefined;
+      if (!tagRow) {
+        const info = db.prepare('INSERT INTO tags (name) VALUES (?)').run(name);
+        tagRow = { id: info.lastInsertRowid as number };
+      }
+      for (const id of existingIds) {
+        db.prepare('INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)').run(id, tagRow.id);
+      }
+    }
+
+    for (const name of removeNames) {
+      const tagRow = db.prepare('SELECT id FROM tags WHERE name = ?').get(name) as { id: number } | undefined;
+      if (!tagRow) continue;
+      for (const id of existingIds) {
+        db.prepare('DELETE FROM file_tags WHERE file_id = ? AND tag_id = ?').run(id, tagRow.id);
+      }
+    }
+
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* no active transaction */
+    }
+    console.error('Bulk tag update failed:', err);
+    return res.status(500).json({ error: 'bulk update failed', message: err instanceof Error ? err.message : String(err) });
+  }
+
+  res.json({ updated: ids.length });
+});
+
 interface TagRow {
   name: string;
   color: string | null;
@@ -474,19 +524,55 @@ router.put('/roots', (req, res) => {
 
 router.get('/settings', (_req, res) => {
   const config = loadConfig();
-  res.json({ defaultPlateSize: config.defaultPlateSize });
+  res.json({ defaultPlateSize: config.defaultPlateSize, slicerCommand: config.slicerCommand });
 });
 
 router.put('/settings', (req, res) => {
-  const { defaultPlateSize } = req.body as { defaultPlateSize?: { x?: unknown; y?: unknown } };
+  const { defaultPlateSize, slicerCommand } = req.body as {
+    defaultPlateSize?: { x?: unknown; y?: unknown };
+    slicerCommand?: unknown;
+  };
   const x = Number(defaultPlateSize?.x);
   const y = Number(defaultPlateSize?.y);
   if (!(x > 0) || !(y > 0)) {
     return res.status(400).json({ error: 'defaultPlateSize must have positive x and y (mm)' });
   }
   const config = loadConfig();
-  saveConfig({ ...config, defaultPlateSize: { x, y } });
-  res.json({ defaultPlateSize: { x, y } });
+  const nextSlicer = typeof slicerCommand === 'string' ? slicerCommand.trim() : config.slicerCommand;
+  saveConfig({ ...config, defaultPlateSize: { x, y }, slicerCommand: nextSlicer });
+  res.json({ defaultPlateSize: { x, y }, slicerCommand: nextSlicer });
+});
+
+// Opens a catalog file in the user's slicer (Bambu Studio by default). Gated to loopback
+// callers: it launches a desktop GUI process on the host, which only makes sense for the
+// local user running the app — not a remote LAN client or a container. See openInApp.ts.
+router.post('/files/:id/open', async (req, res) => {
+  const remote = req.socket.remoteAddress ?? '';
+  const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+  if (!isLoopback && process.env.PRINTSORT_ALLOW_REMOTE_LAUNCH !== '1') {
+    return res.status(403).json({ error: 'open is only available to the local user' });
+  }
+
+  const resolved = resolveFilePath(Number(req.params.id));
+  if ('error' in resolved) {
+    const status = resolved.error === 'not found' ? 404 : resolved.error === 'invalid path' ? 400 : 404;
+    return res.status(status).json({ error: resolved.error });
+  }
+  if (resolved.ext.toLowerCase() === '.zip') {
+    return res.status(400).json({ error: 'archives cannot be opened in a slicer' });
+  }
+
+  try {
+    const result = await openInSlicer(resolved.fullPath);
+    if (!result.ok) {
+      return res
+        .status(500)
+        .json({ error: 'could not launch slicer', message: result.error, command: result.command });
+    }
+    res.json({ ok: true, method: result.method, command: result.command });
+  } catch (err) {
+    res.status(500).json({ error: 'could not launch slicer', message: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 router.post('/files/:id/thumbnail', (req, res) => {

@@ -13,6 +13,9 @@ export default function Settings() {
   const [plateSize, setPlateSize] = useState<PlateSize>({ x: 256, y: 256 });
   const [plateSaved, setPlateSaved] = useState<string | null>(null);
 
+  const [slicerCommand, setSlicerCommand] = useState('');
+  const [slicerSaved, setSlicerSaved] = useState<string | null>(null);
+
   const [tags, setTags] = useState<TagInfo[]>([]);
 
   const reload = () => api.getRoots().then(setRoots);
@@ -21,7 +24,10 @@ export default function Settings() {
   useEffect(() => {
     reload();
     reloadTags();
-    api.getSettings().then((s) => setPlateSize(s.defaultPlateSize));
+    api.getSettings().then((s) => {
+      setPlateSize(s.defaultPlateSize);
+      setSlicerCommand(s.slicerCommand);
+    });
   }, []);
 
   const addRoot = () => {
@@ -55,12 +61,23 @@ export default function Settings() {
   const savePlateSize = () => {
     setPlateSaved(null);
     api
-      .updateSettings({ defaultPlateSize: plateSize })
+      .updateSettings({ defaultPlateSize: plateSize, slicerCommand })
       .then((s) => {
         setPlateSize(s.defaultPlateSize);
         setPlateSaved('Saved');
       })
       .catch(() => setPlateSaved('Enter positive width and depth in mm'));
+  };
+
+  const saveSlicer = () => {
+    setSlicerSaved(null);
+    api
+      .updateSettings({ defaultPlateSize: plateSize, slicerCommand })
+      .then((s) => {
+        setSlicerCommand(s.slicerCommand);
+        setSlicerSaved('Saved');
+      })
+      .catch(() => setSlicerSaved('Could not save'));
   };
 
   const setTagColor = (name: string, color: string | null) => {
@@ -147,6 +164,24 @@ export default function Settings() {
           </label>
           <button onClick={savePlateSize}>Save</button>
           {plateSaved && <span className="muted">{plateSaved}</span>}
+        </div>
+      </section>
+
+      <section>
+        <h3>Slicer</h3>
+        <p className="muted">
+          Path to the slicer executable used by the “Open in slicer” button on a file’s page.
+          Leave blank to auto-detect Bambu Studio and otherwise fall back to the operating
+          system’s default handler for the file type.
+        </p>
+        <div className="add-root-form">
+          <input
+            placeholder={'e.g. C:/Program Files/Bambu Studio/bambu-studio.exe'}
+            value={slicerCommand}
+            onChange={(e) => setSlicerCommand(e.target.value)}
+          />
+          <button onClick={saveSlicer}>Save</button>
+          {slicerSaved && <span className="muted">{slicerSaved}</span>}
         </div>
       </section>
 
