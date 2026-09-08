@@ -9,7 +9,7 @@ proxy to set up. It runs on Linux (amd64/arm64) and on Docker Desktop for Window
 | Path | What it is | How to mount it |
 |---|---|---|
 | `/data` | All mutable state — `catalog.db` (SQLite), `config.json`, `assets/` (per-file thumbnail + image + baked-mesh cache) | A named volume or a bind mount. **Persist this** or you lose your catalog, tags, and notes. |
-| `/models` | Where you mount your folders of `.stl` / `.3mf` / `.obj` / `.zip` files | One or more read-only (`:ro`) bind mounts, one per folder, each under its own name. |
+| `/models` | Where you mount your folders of `.stl` / `.3mf` / `.obj` / `.zip` / `.f3d` files | One or more read-only (`:ro`) bind mounts, one per folder, each under its own name. |
 | `3001` | HTTP port | Publish to a host port. |
 
 The server reads its paths from env vars (`DB_PATH`, `CONFIG_PATH`, `ASSETS_DIR`,

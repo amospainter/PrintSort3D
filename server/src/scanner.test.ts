@@ -238,6 +238,26 @@ describe('runScan', () => {
     expect(Array.from(png.subarray(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
   });
 
+  it('catalogues an .f3d (Fusion 360) file: preview thumbnail, no mesh/dimensions/geometry hash', async () => {
+    const zip = new AdmZip();
+    zip.addFile('Manifest.dat', Buffer.from('binary'));
+    zip.addFile('FusionAssetName[Active]/Breps.BlobParts/BREP.abc.smb', Buffer.from('proprietary brep'));
+    zip.addFile('FusionAssetName[Active]/Previews/small.png', ONE_PIXEL_PNG);
+    zip.writeZip(path.join(filesDir, 'widget.f3d'));
+    await runScan();
+
+    const row = db.prepare("SELECT * FROM files WHERE filename = 'widget.f3d'").get() as any;
+    expect(row).toBeTruthy();
+    expect(row.ext).toBe('.f3d');
+    expect(row.thumbnail_path).toBe('thumbnail.png');
+    const png = fs.readFileSync(path.join(process.env.ASSETS_DIR!, String(row.id), 'thumbnail.png'));
+    expect(png.equals(ONE_PIXEL_PNG)).toBe(true);
+    expect(row.mesh_path).toBeNull();
+    expect(row.dimension_x).toBeNull();
+    expect(row.geometry_hash).toBeNull();
+    expect(row.content_hash).toBeTruthy(); // exact-duplicate detection still applies
+  });
+
   it('does not render a thumbnail over a Bambu 3MF that has its own embedded plate image', async () => {
     // writeBambu3mf embeds Metadata/plate_1.png (a real 1×1 PNG). That should win over a
     // synthetic render — assert the cached thumbnail is the tiny embedded one, not a 256px raster.

@@ -5,6 +5,7 @@ import { cacheThreeMfImages, cacheBakedMeshParts, saveThumbnail } from './assets
 import { computeDimensions, dimensionsFromParts, type Dimensions } from './dimensions';
 import { computeContentHash, computeGeometryHash, computeGeometryHashFromParts } from './fingerprint';
 import { listArchiveModelEntries } from './archive';
+import { extractF3dThumbnail } from './f3d';
 import { bakeModel, type BakedPart } from './meshBake';
 import { renderBakedThumbnail } from './thumbnail';
 
@@ -114,6 +115,15 @@ export async function extractArtifacts(
     ext === '.zip' ? listArchiveModelEntries(fullPath).length : null;
 
   let thumbnailWritten = hasEmbeddedThumbnail;
+  // A Fusion 360 .f3d has no parseable geometry — take its embedded Previews/*.png as the
+  // thumbnail and nothing else.
+  if (ext === '.f3d') {
+    const preview = extractF3dThumbnail(fullPath);
+    if (preview) {
+      saveThumbnail(fileId, preview);
+      thumbnailWritten = true;
+    }
+  }
   if (parts && !hasEmbeddedThumbnail) {
     const png = await renderBakedThumbnail(parts);
     if (png) {

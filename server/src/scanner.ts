@@ -6,7 +6,7 @@ import { THUMBNAIL_FILENAME } from './assets';
 import { extractArtifactsPooled } from './scanPool';
 import { statFile, type FileArtifacts } from './scanArtifacts';
 
-const SUPPORTED_EXTS = new Set(['.stl', '.3mf', '.obj', '.zip']);
+const SUPPORTED_EXTS = new Set(['.stl', '.3mf', '.obj', '.zip', '.f3d']);
 
 // Bumped whenever scan-time post-processing (dimensions, 3MF metadata/images, content/geometry
 // hashing, archive entry counting, plate grouping, ...) changes in a way that existing rows

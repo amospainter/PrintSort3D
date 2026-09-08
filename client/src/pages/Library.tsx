@@ -16,6 +16,7 @@ const EXT_TABS = [
   { value: '.stl', label: 'STL' },
   { value: '.3mf', label: '3MF' },
   { value: '.obj', label: 'OBJ' },
+  { value: '.f3d', label: 'F3D' },
   { value: '.zip', label: 'ZIP' },
 ] as const;
 const SORT_OPTIONS = [

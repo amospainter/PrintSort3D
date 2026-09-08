@@ -1,6 +1,6 @@
 # PrintSort3D
 
-A local web app for cataloging, browsing, and searching your STL / 3MF / OBJ / ZIP print files. Scans folders you point it at, generates a thumbnail for each model (extracted directly from Bambu Lab `.3mf` files, or rendered in-browser for everything else), and lets you tag and take notes on each file.
+A local web app for cataloging, browsing, and searching your STL / 3MF / OBJ / ZIP / F3D print files. Scans folders you point it at, generates a thumbnail for each model (extracted directly from Bambu Lab `.3mf` and Fusion 360 `.f3d` files, rendered server-side for everything else), and lets you tag and take notes on each file.
 
 See [docs/architecture.md](docs/architecture.md) for how it's built, [docs/api.md](docs/api.md) for the HTTP API, [docs/testing.md](docs/testing.md) for the test suites, and [docs/backlog.md](docs/backlog.md) for deferred work.
 
@@ -8,7 +8,7 @@ See [docs/architecture.md](docs/architecture.md) for how it's built, [docs/api.m
 
 ## Features
 
-- **Scans folders you configure** — recursively finds `.stl`, `.3mf`, `.obj`, and `.zip` files under any number of watched roots. Files that disappear are flagged "missing" (keeping their tags/notes), not deleted, and un-flagged if they reappear.
+- **Scans folders you configure** — recursively finds `.stl`, `.3mf`, `.obj`, `.zip`, and `.f3d` (Fusion 360) files under any number of watched roots. Files that disappear are flagged "missing" (keeping their tags/notes), not deleted, and un-flagged if they reappear.
 - **A thumbnail for every model** — pulled straight out of Bambu Lab `.3mf` files, or rendered in-browser with three.js for STL/OBJ and non-Bambu 3MFs, then cached server-side.
 - **Interactive 3D viewer** — orbit/pan/zoom, drawn against a to-scale build plate (parsed per-file for Bambu/Orca 3MFs, otherwise a configurable default). Loads a server-baked binary mesh so even multi-megabyte models open near-instantly; a **Load full model** button re-parses the source file in-browser on demand.
 - **Multi-plate 3MFs** — switch between plates, or view them all laid out on their own beds. Plate names from Bambu Studio / OrcaSlicer are shown.

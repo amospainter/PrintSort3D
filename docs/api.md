@@ -25,7 +25,7 @@ Returned by every endpoint below that mentions "a file object":
 {
   id: number,
   filename: string,
-  ext: string,                    // ".stl" | ".3mf" | ".obj"
+  ext: string,                    // ".stl" | ".3mf" | ".obj" | ".zip" | ".f3d"
   sizeBytes: number,
   mtime: number,                  // file's last-modified time, ms since epoch
   addedAt: number,                // when the row was first inserted, ms since epoch
@@ -72,7 +72,7 @@ Query params (all optional):
 | `root` | Only files under the root folder with this exact `label` (see `GET /api/roots`) |
 | `folder` | Only files at or below this directory, relative to the root (`/`-joined, e.g. `vehicles/cars`). Recursive; separator-normalized so it works regardless of how `relative_path` was stored. Usually combined with `root`. |
 | `tags` | Comma-separated tag names; a file must carry **every** listed tag (AND, not OR) |
-| `ext` | Only files with this extension (`.stl`, `.3mf`, `.obj`, `.zip` — leading dot optional) |
+| `ext` | Only files with this extension (`.stl`, `.3mf`, `.obj`, `.zip`, `.f3d` — leading dot optional) |
 | `duplicatesOnly` | `1` or `true` — only files that share a `content_hash` or `geometry_hash` with another file |
 | `missingOnly` | `1` or `true` — only files flagged `missing` on the last scan |
 | `sort` | One of `name`, `size`, `added`, `mtime`, `printTime`, `filament`. Defaults to `added`. `printTime`/`filament` read `slice_info_json`; files without it sort last. |

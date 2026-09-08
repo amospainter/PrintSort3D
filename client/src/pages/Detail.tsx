@@ -42,6 +42,10 @@ function PathBreadcrumb({ file }: { file: FileEntry }) {
 // keep the main thread responsive). STL/OBJ/3MF alike.
 const FULL_MODEL_AUTO_BYTES = 5 * 1024 * 1024;
 
+// Formats with no in-browser 3D view: `.zip` (browsed entry-by-entry) and `.f3d` (Fusion 360
+// — proprietary geometry, only a preview image).
+const NO_VIEWER_EXTS = new Set(['.zip', '.f3d']);
+
 function formatDimensions(size: { x: number; y: number; z: number }): string {
   const fmt = (n: number) => n.toFixed(1);
   return `${fmt(size.x)} × ${fmt(size.y)} × ${fmt(size.z)} mm`;
@@ -174,7 +178,7 @@ export default function Detail() {
         setTagDraft(f.tags);
         setPendingTag('');
         setActivePlateIndex(null); // "All plates" by default — matches the pre-plate-switcher 3D view
-        setLoadFull(f.ext !== '.zip' && f.sizeBytes > 0 && f.sizeBytes < FULL_MODEL_AUTO_BYTES);
+        setLoadFull(!NO_VIEWER_EXTS.has(f.ext) && f.sizeBytes > 0 && f.sizeBytes < FULL_MODEL_AUTO_BYTES);
         setArrayBuffer(null);
       })
       .catch((err) => {
@@ -211,7 +215,7 @@ export default function Detail() {
   // for a non-archive file with no baked mesh yet (pre-v8 scan, or bake failed), and the
   // source for the "Load full model" toggle when a baked mesh does exist.
   useEffect(() => {
-    if (!file || file.ext === '.zip') return;
+    if (!file || NO_VIEWER_EXTS.has(file.ext)) return;
     if (file.meshUrl && !(loadFull && !painted)) return; // baked mesh covers this case
     if (arrayBuffer) return;
     let cancelled = false;
@@ -308,6 +312,18 @@ export default function Detail() {
             <div className="viewer-pane">
               {file.ext === '.zip' ? (
                 <ArchiveViewer fileId={fileId} />
+              ) : file.ext === '.f3d' ? (
+                <div className="f3d-preview">
+                  {file.thumbnailUrl ? (
+                    <img src={file.thumbnailUrl} alt={file.filename} />
+                  ) : (
+                    <div className="thumb-placeholder">F3D</div>
+                  )}
+                  <p className="muted">
+                    Autodesk Fusion 360 design — no in-browser 3D view. Download it to open in
+                    Fusion.
+                  </p>
+                </div>
               ) : file.meshUrl || arrayBuffer ? (
                 <>
                   <ModelViewer
@@ -431,13 +447,13 @@ export default function Detail() {
                 <span className="danger-text">Missing on disk</span>
               </div>
             )}
-            {file.ext !== '.zip' && (
+            {!NO_VIEWER_EXTS.has(file.ext) && (
               <div className="details-row">
                 <span className="muted">Dimensions</span>
                 <span>{file.dimensions ? formatDimensions(file.dimensions) : 'Unknown'}</span>
               </div>
             )}
-            {file.ext !== '.zip' && (
+            {!NO_VIEWER_EXTS.has(file.ext) && (
               <div className="details-row">
                 <span className="muted">Build plate</span>
                 <span title={file.plateSizeSource === 'file' ? 'From this file’s slicer settings' : 'App default (Settings)'}>
